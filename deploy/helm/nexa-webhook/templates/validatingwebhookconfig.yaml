@@ -1,0 +1,31 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "nexa-webhook.fullname" . }}
+  labels:
+    {{- include "nexa-webhook.labels" . | nindent 4 }}
+webhooks:
+  - name: validate.nexa.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "nexa-webhook.fullname" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate
+        port: 443
+      {{- if .Values.tls.caBundle }}
+      caBundle: {{ .Values.tls.caBundle }}
+      {{- end }}
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    sideEffects: None
+    timeoutSeconds: 10
+    namespaceSelector:
+      matchLabels:
+        nexa.io/webhook: "enabled"
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: Namespaced

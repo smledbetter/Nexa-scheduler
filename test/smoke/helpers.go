@@ -6,6 +6,7 @@ package smoke
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -291,6 +292,121 @@ func applyNexaPolicy(t *testing.T, yamlContent string) {
 func deleteNexaPolicy(t *testing.T) {
 	t.Helper()
 	_, _ = runCmdNoFail("kubectl", "delete", "nexapolicy", "default", "-n", namespace, "--ignore-not-found")
+}
+
+const (
+	webhookRelease = "nexa-webhook-smoke"
+)
+
+// buildAndLoadWebhookImage builds the webhook Docker image and loads it into Kind.
+func buildAndLoadWebhookImage(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	runCmd(t, "docker", "build", "-t", "nexascheduler/nexa-webhook:smoke", "-f", filepath.Join(root, "Dockerfile.webhook"), root)
+	runCmd(t, "kind", "load", "docker-image", "nexascheduler/nexa-webhook:smoke", "--name", clusterName)
+}
+
+// generateWebhookCerts creates a self-signed CA and serving certificate for the webhook.
+// Returns the CA bundle (PEM) for injection into the ValidatingWebhookConfiguration.
+func generateWebhookCerts(t tb) (caBundle string) {
+	t.Helper()
+	dir := filepath.Join(os.TempDir(), "nexa-webhook-certs")
+	_ = os.MkdirAll(dir, 0o755)
+
+	svcDNS := fmt.Sprintf("%s-nexa-webhook.%s.svc", webhookRelease, namespace)
+
+	// Generate CA key and cert.
+	runCmd(t, "openssl", "req", "-x509", "-newkey", "rsa:2048",
+		"-keyout", filepath.Join(dir, "ca.key"),
+		"-out", filepath.Join(dir, "ca.crt"),
+		"-days", "1", "-nodes", "-subj", "/CN=nexa-webhook-ca")
+
+	// Generate server key and CSR.
+	runCmd(t, "openssl", "req", "-newkey", "rsa:2048",
+		"-keyout", filepath.Join(dir, "tls.key"),
+		"-out", filepath.Join(dir, "tls.csr"),
+		"-nodes", "-subj", fmt.Sprintf("/CN=%s", svcDNS),
+		"-addext", fmt.Sprintf("subjectAltName=DNS:%s", svcDNS))
+
+	// Sign the server cert with the CA.
+	// Write a temporary ext file for SAN.
+	extContent := fmt.Sprintf("subjectAltName=DNS:%s", svcDNS)
+	extFile := filepath.Join(dir, "ext.cnf")
+	if err := os.WriteFile(extFile, []byte(extContent), 0o644); err != nil {
+		t.Fatalf("write ext file: %v", err)
+	}
+	runCmd(t, "openssl", "x509", "-req",
+		"-in", filepath.Join(dir, "tls.csr"),
+		"-CA", filepath.Join(dir, "ca.crt"),
+		"-CAkey", filepath.Join(dir, "ca.key"),
+		"-CAcreateserial",
+		"-out", filepath.Join(dir, "tls.crt"),
+		"-days", "1",
+		"-extfile", extFile)
+
+	// Create the TLS secret in the namespace.
+	runCmd(t, "kubectl", "create", "secret", "tls", "nexa-webhook-tls",
+		"--cert", filepath.Join(dir, "tls.crt"),
+		"--key", filepath.Join(dir, "tls.key"),
+		"-n", namespace)
+
+	// Read CA bundle for webhook config.
+	caPEM, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
+	if err != nil {
+		t.Fatalf("read CA cert: %v", err)
+	}
+	return string(caPEM)
+}
+
+// installWebhookChart installs the webhook Helm chart with smoke test overrides.
+func installWebhookChart(t tb, caBundle string) {
+	t.Helper()
+	root := repoRoot(t)
+	chartPath := filepath.Join(root, "deploy", "helm", "nexa-webhook")
+
+	// Base64 encode the CA bundle for the webhook config.
+	caBundleB64 := base64Encode([]byte(caBundle))
+
+	rulesJSON := `[{"namespace":"alpha-workloads","allowedOrgs":["alpha"],"allowedPrivacy":["standard","high"]},{"namespace":"*","allowedOrgs":["default-org"],"allowedPrivacy":["standard","high"]}]`
+
+	runCmd(t, "helm", "install", webhookRelease, chartPath,
+		"--namespace", namespace,
+		"--set", "image.tag=smoke",
+		"--set", "image.pullPolicy=Never",
+		"--set", "tls.caBundle="+caBundleB64,
+		"--set-json", "rules="+rulesJSON,
+		"--wait",
+		"--timeout", "120s",
+	)
+}
+
+// uninstallWebhookChart removes the webhook Helm release.
+func uninstallWebhookChart() {
+	_, _ = runCmdNoFail("helm", "uninstall", webhookRelease, "--namespace", namespace)
+}
+
+// base64Encode returns the base64-encoded string of the input.
+func base64Encode(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// createWebhookTestNamespace creates a namespace with the webhook-enabled label.
+func createWebhookTestNamespace(t *testing.T, client kubernetes.Interface, nsName string) {
+	t.Helper()
+	_, err := client.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nsName,
+			Labels: map[string]string{
+				"nexa.io/webhook": "enabled",
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create namespace %s: %v", nsName, err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), nsName, metav1.DeleteOptions{})
+	})
 }
 
 // schedulerLogs returns the logs from the Nexa scheduler pod.

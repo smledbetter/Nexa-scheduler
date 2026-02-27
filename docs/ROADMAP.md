@@ -2,15 +2,17 @@
 
 ## Current State
 
-- **Status:** Feature complete
-- **Tests:** 70 top-level (+ 10 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing)
-- **LOC:** ~7300 (application + deployment, excluding go.sum/config)
+- **Status:** Milestone 1 in progress (admission webhook shipped, Kueue integration next)
+- **Tests:** 82 top-level (+ 13 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing, 93.2% webhook)
+- **LOC:** ~8850 (application + deployment, excluding go.sum/config)
+- **Binaries:** 3 (scheduler, node controller, webhook)
+- **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model, integration guide (docs/)
-- **Sprints completed:** 12 (Sprint 0–11), across 11 phases
-- **Gates:** All 9 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet, + CRD helm lint, node controller helm lint)
+- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide (docs/)
+- **Sprints completed:** 13 (Sprint 0–12), across 12 phases
+- **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
 
@@ -202,32 +204,133 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 11: GPU & Confidential Compute Scheduling — (not planned)
+## Next: Compliance & Kueue Complement Roadmap
 
-**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
+**Strategic direction:** Position Nexa as a complement to Kueue for sensitive AI workloads. Kueue handles "when does this job run?" (queuing, admission, fairness). Nexa handles "where does it land safely?" (privacy, compliance, geographic sovereignty). GPU scheduling, gang scheduling, and preemption are out of scope — Kueue/Volcano/YuniKorn serve those use cases well.
+
+**Architectural decision: GPU scheduling removed from roadmap.** Batch/AI scheduling features (GPU topology, gang scheduling, preemption priority) are mature in Volcano, Kueue, and YuniKorn. Building inferior versions of solved problems dilutes focus. Nexa's value is compliance-aware placement, which is complementary to batch schedulers — not competitive with them.
+
+---
+
+### Milestone 1: Production Trust — [Sprints 12–13]
+
+**Goal:** Make Nexa's privacy guarantees enforceable, not advisory. Close the label spoofing threat (highest-severity documented risk) and validate Kueue co-deployment so platform teams can adopt Nexa alongside their existing batch infrastructure.
+
+**Why first:** Without the admission webhook, every privacy guarantee is honor-system. No compliance officer will certify a system where any developer can bypass isolation by typing a label. This is the #1 adoption gate.
+
+#### Phase 11: Admission Webhook for Label Integrity — [Sprint 12] ✅
+
+**Goal:** ValidatingAdmissionWebhook that enforces `nexa.io/*` label provenance. Pods can only set org/privacy labels if the submitting namespace is authorized.
+
+**Architecture:** Separate binary (`cmd/webhook/main.go`) with its own Helm subchart. Not embedded in scheduler or controller — failure isolation is critical since a broken webhook can block pod creation.
+
+**Deliverables:**
+- `pkg/webhook/config.go` + `config_test.go`: Config types, ParseConfig, LoadConfigFromFile, RuleForNamespace, validation (12 test cases)
+- `pkg/webhook/handler.go` + `handler_test.go`: HTTP handler implementing `admission.k8s.io/v1` AdmissionReview with validation logic (40 test cases incl. subtests)
+- `cmd/webhook/main.go`: Standalone binary entrypoint with TLS, config loading, graceful shutdown
+- `Dockerfile.webhook`: Multi-stage distroless build
+- Helm subchart: `deploy/helm/nexa-webhook/` (Deployment, Service, ValidatingWebhookConfiguration, ConfigMap, RBAC, ServiceAccount — 8 templates)
+- Fail-closed: webhook unavailable = pod rejected (configurable via `failurePolicy` in values.yaml)
+- Scope: webhook fires on pods in namespaces with `nexa.io/webhook=enabled` label (opt-in via namespaceSelector)
+- TLS from filesystem (`--cert-dir` flag) — operator provides certs via cert-manager or manually
+- Smoke tests: 3 webhook scenarios with TLS cert generation helpers
+- Threat model updated: label spoofing risk closed (Section 1: Gap → Mitigated)
+- **Descoped:** Label auto-injection requires MutatingAdmissionWebhook (architecturally distinct); deferred
+
+**Estimated LOC:** 600–800 (actual: 1556 incl. Helm templates and tests)
+
+#### Phase 12: Kueue Integration — [Sprint 13]
+
+**Goal:** Documented and tested co-deployment of Kueue + Nexa. Kueue admits jobs (quota, fairness), Nexa places pods (privacy, region). Platform engineers can install both without conflicts.
+
+**Architecture:** No new Go packages. The integration point is the Kubernetes Pod API — Kueue controls `spec.suspend`, Nexa reads from the scheduler queue. They share no state or CRDs.
+
+**Deliverables:**
+- Integration guide section: "Running Nexa alongside Kueue" (interaction model, label propagation, ResourceFlavor alignment with Nexa regions)
+- Shared Helm values example: both charts installed on same cluster
+- Smoke test infrastructure: `installKueue(t)` / `uninstallKueue()` lifecycle helpers, `makeJob()` helper (Kueue manages Jobs, not bare Pods), `waitForWorkloadAdmitted()` two-phase wait (admitted by Kueue, then scheduled by Nexa), Kueue resource setup helpers (ResourceFlavor, ClusterQueue, LocalQueue)
+- Smoke tests (3 scenarios): Kueue admits → Nexa schedules to compliant node; Kueue admits → Nexa rejects all nodes (privacy) → pod stays Pending; Kueue suspends (quota exceeded) → Nexa never sees the pod
+- Document potential conflict: Kueue ResourceFlavor nodeSelector vs. Nexa region filter. Configuration concern, not code concern
+- Kueue version compatibility matrix (pin to specific Kueue release in smoke tests)
+
+**Estimated LOC:** 300–600 (smoke tests + documentation)
+
+---
+
+### Milestone 2: Compliance Evidence — [Sprint 14]
+
+**Goal:** A compliance officer can produce audit evidence for SOC2/HIPAA/GDPR without parsing JSON. The evidence chain is complete: admission validation (M1) → scheduling enforcement → audit report.
+
+#### Phase 13: Compliance Report Generation — [Sprint 14]
+
+**Goal:** CLI tool that reads structured JSON audit logs and produces compliance artifacts: workload inventory, node placement map, isolation compliance, policy timeline, geographic residency.
+
+**Architecture:** New package `pkg/compliance/` and binary `cmd/compliance/main.go`. Offline tool — zero runtime coupling to the scheduler. Shares audit log JSON schema with `pkg/plugins/audit/`.
+
+**Deliverables:**
+- `pkg/compliance/reader.go`: Parse DecisionEntry JSON lines from file or stdin
+- `pkg/compliance/report.go`: Aggregate entries into compliance report (per-org, per-time-range)
+- `cmd/compliance/main.go`: CLI entrypoint (`nexa-report --org alpha --from T1 --to T2 --standard hipaa`)
+- Output formats: JSON (machine-readable) + markdown (human-readable)
+- Reports flag violations with full context (timestamp, pod, node, reason)
+- Reports include compliant decisions (auditors need proof of compliance, not just violations)
+- Integration guide: "Immutable Audit Storage" section with S3 Object Lock and Loki retention examples (documentation, not code — log shipping is operator infrastructure)
+- Unit tests for parsing, aggregation, and report generation
+
+**Estimated LOC:** 300–400
+
+---
+
+### Milestone 3: Hardware Trust — [Sprint 15]
+
+**Goal:** Extend Nexa's privacy guarantees to hardware-level protections and temporal freshness. Platform engineers operating TEE-capable infrastructure can enforce confidential compute requirements at scheduling time. Temporal policy ensures wipe freshness.
+
+#### Phase 14: Confidential Compute Scheduling + Node Cooldown — [Sprint 15]
+
+**Goal:** New Filter/Score plugin for TEE-capable nodes. Extend wipe tracking from boolean to timestamp for temporal freshness policy.
+
+**Architecture:** Confidential compute plugin follows the established pattern (identical structure to region/privacy plugins). Node cooldown is a surgical enhancement to the existing node state controller and privacy filter.
 
 **Deliverables:**
 
-*GPU scheduling:*
-- GPU topology Score plugin: prefer nodes where requested GPU count aligns with available contiguous GPUs; score based on `nvidia.com/gpu` extended resources and topology labels (`nexa.io/gpu-topology`, `nexa.io/nvlink-group`)
-- Gang-scheduling Permit plugin: hold pods belonging to a job group (`nexa.io/gang-group`) until all members are schedulable, then release together; timeout with configurable grace period
-- Preemption priority integration: priority classes for training vs. inference vs. batch workloads; configurable preemption policies in the policy engine (which job types can preempt which)
-- Filter plugin: reject nodes without sufficient GPU resources or incompatible accelerator type (`nexa.io/accelerator-type`: A100, H100, etc.)
-
-*Confidential compute scheduling:*
+*Confidential compute:*
+- `pkg/plugins/confidential/confidential.go`: Filter + Score plugin
 - New node labels: `nexa.io/tee` (values: `tdx`, `sev-snp`, `none`), `nexa.io/confidential` (boolean), `nexa.io/disk-encrypted` (boolean)
-- Confidential Filter plugin: reject non-TEE nodes for pods with `nexa.io/confidential=required`; reject nodes without disk encryption for pods with `nexa.io/privacy=high`
-- Confidential Score plugin: prefer TEE-capable nodes for `privacy=high` workloads; prefer nodes with matching TEE type when pod specifies `nexa.io/tee-type`
-- Policy rule: `privacy=high` + `gpu=required` → require `nexa.io/confidential=true` node (configurable via CRD or ConfigMap)
-- runtimeClass constraint: policy can require `runtimeClassName: kata-cc` (or similar) for confidential workloads; validated at Filter time
+- Confidential Filter: reject non-TEE nodes for pods with `nexa.io/confidential=required`; reject nodes without disk encryption for pods with `nexa.io/privacy=high`
+- Confidential Score: prefer TEE-capable nodes for `privacy=high` workloads; prefer nodes with matching TEE type when pod specifies `nexa.io/tee-type`
+- Policy extension: `ConfidentialPolicy` added to NexaPolicy CRD (`requireTEEForHigh`, `requireEncryptedDisk`, `defaultTEEType`)
+- runtimeClass constraint: policy can require `runtimeClassName: kata-cc` for confidential workloads, validated at Filter time
+
+*Node cooldown:*
+- New label: `nexa.io/wipe-timestamp` (RFC3339) — written by Node State Controller alongside `nexa.io/wiped=true`
+- Policy extension: `CooldownHours int` in `PrivacyPolicy` (0 = disabled, backward compatible)
+- Privacy Filter enhancement: if `CooldownHours > 0`, reject nodes where wipe timestamp exceeds threshold
+- Fail-closed: missing or malformed timestamp = node rejected
 
 *Shared:*
-- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering, TEE label filtering, confidential+GPU policy composition, runtimeClass enforcement
-- Threat model addendum (cross-ref Phase 9): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
+- Unit tests: TEE label filtering, confidential+privacy policy composition, runtimeClass enforcement, temporal freshness (recent wipe passes, stale wipe rejected, missing timestamp rejected, cooldown disabled)
+- Threat model addendum: GPU VRAM encryption gap (GPU memory not protected by CPU TEEs), self-reported labels vs. remote attestation
+- Smoke tests for TEE filtering and temporal freshness
 
 **Known limitations (to document, not solve):**
 - Node labels are self-reported. Without remote attestation, `nexa.io/confidential=true` is a policy signal, not a cryptographic guarantee. Attestation integration is a future phase.
 - No mainstream GPU offers full VRAM encryption. Confidential GPU compute is a hardware industry gap, not a scheduling gap.
 - Confidential Containers (CoCo/Kata) add overhead. Policy should make confidential placement opt-in, not default.
 
-**Estimated LOC:** 1000–1500
+**Estimated LOC:** 500–750
+
+---
+
+### Deferred
+
+#### Graduated Isolation Policies — (not planned)
+
+Add a `medium` privacy tier between `high` and `standard` with configurable per-level requirements. **Deferred because:** the binary high/standard model covers real-world cases. `strictOrgIsolation` already serves the "medium" use case (org isolation without wipe requirement). Adding tiers increases policy surface area and audit complexity. Revisit only when users report the binary model as an adoption blocker.
+
+#### Immutable Audit Log Shipping — (not planned, documented instead)
+
+Built-in sidecar for log forwarding to append-only storage. **Cut because:** every organization has an existing log pipeline (Fluent Bit, Promtail, Vector, Datadog). Nexa's JSON-to-stderr contract is the standard Kubernetes logging interface. Immutability guarantees come from the destination (S3 Object Lock, Loki retention), not the shipper. Example configs are documented in the integration guide.
+
+#### GPU & Batch Scheduling — (out of scope)
+
+GPU topology awareness, gang scheduling, preemption priority. **Out of scope because:** Kueue, Volcano, and YuniKorn are mature, CNCF-backed solutions for these capabilities. Nexa complements them (privacy-aware placement) rather than competing with them (batch orchestration).

@@ -49,11 +49,11 @@ This document covers the attack surface of the Nexa Scheduler as deployed via He
 
 **Mitigation:** The scheduler trusts pod labels at face value by design — it is a placement engine, not an admission controller. Label validation requires a separate mechanism.
 
-**Recommendation:** Deploy a ValidatingAdmissionWebhook or OPA Gatekeeper policy that restricts `nexa.io/org` labels based on the submitting service account's namespace or identity. Example rule: only pods in namespace `alpha-workloads` may set `nexa.io/org=alpha`.
+**Recommendation:** Deploy the Nexa ValidatingAdmissionWebhook (`deploy/helm/nexa-webhook/`) to restrict `nexa.io/org` labels based on namespace rules. Example rule: only pods in namespace `alpha-workloads` may set `nexa.io/org=alpha`.
 
-**Status:** Gap — operator responsibility. Documented as a known limitation.
+**Status:** Mitigated — ValidatingAdmissionWebhook (`pkg/webhook/`) enforces label integrity per namespace. Opt-in via `nexa.io/webhook=enabled` namespace label. Fail-closed by default.
 
-**Code reference:** `pkg/plugins/privacy/privacy.go` reads `nexa.io/org` from pod labels without validation.
+**Code reference:** `pkg/webhook/handler.go` validates `nexa.io/org` and `nexa.io/privacy` labels against namespace-scoped rules. `pkg/plugins/privacy/privacy.go` reads labels at scheduling time (post-admission).
 
 ### 2. Node Labels — Unauthorized Mutation
 

@@ -1,0 +1,95 @@
+# Nexa Admission Webhook Helm Values
+
+# -- Number of webhook replicas. Use 2+ for high availability.
+replicaCount: 2
+
+image:
+  # -- Container image repository.
+  repository: nexascheduler/nexa-webhook
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart appVersion.
+  tag: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the release name.
+nameOverride: ""
+# -- Override the full release name.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount for the webhook.
+  create: true
+  # -- Annotations to add to the ServiceAccount.
+  annotations: {}
+  # -- Name override. Defaults to the fullname template.
+  name: ""
+
+rbac:
+  # -- Create ClusterRole and ClusterRoleBinding.
+  create: true
+
+# -- Pod annotations.
+podAnnotations: {}
+
+# -- Pod security context.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Container resource requests and limits.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# -- Node selector for webhook pod placement.
+nodeSelector: {}
+
+# -- Tolerations for webhook pod placement.
+tolerations: []
+
+# -- Affinity rules for webhook pod placement.
+affinity: {}
+
+# Webhook settings
+webhook:
+  # -- HTTPS port for admission webhook.
+  port: 8443
+  # -- HTTP port for health checks and metrics.
+  metricsPort: 8080
+  # -- Failure policy: Fail (fail-closed) or Ignore (fail-open).
+  failurePolicy: Fail
+
+# TLS certificate configuration
+tls:
+  # -- Name of the Secret containing tls.crt and tls.key.
+  secretName: nexa-webhook-tls
+  # -- CA bundle for the ValidatingWebhookConfiguration (base64-encoded).
+  # Populate via cert-manager or manually.
+  caBundle: ""
+
+# Webhook rules configuration
+rules:
+  # -- Namespace rules for label validation.
+  # Each rule maps a namespace (or "*" for wildcard) to allowed orgs and privacy levels.
+  - namespace: "*"
+    allowedOrgs: []
+    allowedPrivacy:
+      - standard
+      - high

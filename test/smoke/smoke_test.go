@@ -15,7 +15,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-var testClient kubernetes.Interface
+var (
+	testClient     kubernetes.Interface
+	webhookEnabled bool
+)
 
 // TestMain manages the shared Kind cluster lifecycle.
 // Creates the cluster, builds/loads the image, installs the chart, labels workers,
@@ -61,6 +64,25 @@ func TestMain(m *testing.M) {
 		if t.failed {
 			fmt.Fprintf(os.Stderr, "scheduler not ready: %s\n", t.msg)
 			return 1
+		}
+
+		// Set up webhook if Docker is available for the webhook image build.
+		buildAndLoadWebhookImage(t)
+		if !t.failed {
+			caBundle := generateWebhookCerts(t)
+			if !t.failed {
+				installWebhookChart(t, caBundle)
+				if !t.failed {
+					webhookEnabled = true
+					defer uninstallWebhookChart()
+				}
+			}
+		}
+		if t.failed {
+			// Webhook setup failure is non-fatal — run other tests.
+			fmt.Fprintf(os.Stderr, "webhook setup failed (non-fatal): %s\n", t.msg)
+			t.failed = false
+			t.msg = ""
 		}
 
 		return m.Run()
@@ -437,4 +459,63 @@ spec:
 	// With region policy disabled via CRD, pod should schedule on any node.
 	nodeName := waitForPodScheduled(t, testClient, ns, "crd-override-test", 60*time.Second)
 	t.Logf("pod scheduled on %s with CRD region policy disabled (any node is acceptable)", nodeName)
+}
+
+// --- Webhook admission smoke tests ---
+
+// TestWebhookSpoofedOrgRejected verifies that a pod with a spoofed org label is rejected
+// by the admission webhook in a webhook-enabled namespace.
+func TestWebhookSpoofedOrgRejected(t *testing.T) {
+	if !webhookEnabled {
+		t.Skip("webhook not installed")
+	}
+	createWebhookTestNamespace(t, testClient, "alpha-workloads")
+
+	pod := makePod("spoofed-org", map[string]string{
+		"nexa.io/org": "beta",
+	})
+	_, err := testClient.CoreV1().Pods("alpha-workloads").Create(context.Background(), pod, metav1.CreateOptions{})
+	if err == nil {
+		t.Fatal("expected pod creation to be rejected, but it was admitted")
+	}
+	if !strings.Contains(err.Error(), "not authorized for org") {
+		t.Errorf("expected rejection message about org authorization, got: %v", err)
+	}
+}
+
+// TestWebhookAuthorizedOrgAdmitted verifies that a pod with a valid org label is admitted
+// by the admission webhook.
+func TestWebhookAuthorizedOrgAdmitted(t *testing.T) {
+	if !webhookEnabled {
+		t.Skip("webhook not installed")
+	}
+	// Reuse the alpha-workloads namespace (already created by previous test or create it).
+	// Create a fresh one to avoid ordering dependency.
+	createWebhookTestNamespace(t, testClient, "alpha-workloads-admit")
+
+	// We need a rule for this namespace. The wildcard rule allows "default-org".
+	// The alpha-workloads rule allows "alpha". Let's use the wildcard.
+	pod := makePod("valid-org", map[string]string{
+		"nexa.io/org": "default-org",
+	})
+	_, err := testClient.CoreV1().Pods("alpha-workloads-admit").Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("expected pod to be admitted, got: %v", err)
+	}
+}
+
+// TestWebhookNoLabelsAdmitted verifies that a pod with no nexa.io labels is admitted.
+func TestWebhookNoLabelsAdmitted(t *testing.T) {
+	if !webhookEnabled {
+		t.Skip("webhook not installed")
+	}
+	createWebhookTestNamespace(t, testClient, "webhook-nolabels")
+
+	pod := makePod("no-labels", map[string]string{
+		"app": "myapp",
+	})
+	_, err := testClient.CoreV1().Pods("webhook-nolabels").Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("expected pod with no nexa.io labels to be admitted, got: %v", err)
+	}
 }

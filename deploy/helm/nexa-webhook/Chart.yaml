@@ -1,0 +1,16 @@
+apiVersion: v2
+name: nexa-webhook
+description: Validating Admission Webhook for Nexa Scheduler — enforces nexa.io/* label integrity
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - webhook
+  - admission
+  - nexa
+home: https://github.com/nexascheduler/nexa
+sources:
+  - https://github.com/nexascheduler/nexa
+maintainers:
+  - name: Nexa Scheduler Team

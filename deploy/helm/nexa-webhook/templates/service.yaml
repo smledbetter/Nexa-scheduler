@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nexa-webhook.fullname" . }}
+  labels:
+    {{- include "nexa-webhook.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "nexa-webhook.selectorLabels" . | nindent 4 }}

@@ -1,9 +1,12 @@
-.PHONY: all build test lint cover smoke clean
+.PHONY: all build test lint cover smoke clean webhook
 
 all: build lint test
 
 build:
 	go build ./...
+
+webhook:
+	CGO_ENABLED=0 go build -o bin/nexa-webhook ./cmd/webhook
 
 test:
 	go test ./...

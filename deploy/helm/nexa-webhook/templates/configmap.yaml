@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexa-webhook.fullname" . }}-config
+  labels:
+    {{- include "nexa-webhook.labels" . | nindent 4 }}
+data:
+  config.json: |
+    {
+      "rules": {{ .Values.rules | toJson }}
+    }
