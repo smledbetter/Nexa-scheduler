@@ -2,13 +2,14 @@
 
 ## Current State
 
+- **Status:** Feature complete
 - **Tests:** 70 top-level (+ 10 smoke tests behind `//go:build smoke`, all passing)
 - **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing)
 - **LOC:** ~7300 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
 - **Docs:** Quickstart, architecture, threat model, integration guide (docs/)
-- **Milestone status:** Sprint 11 (Phase 10a) complete. Sprint 12 next.
+- **Sprints completed:** 12 (Sprint 0–11), across 11 phases
 - **Gates:** All 9 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet, + CRD helm lint, node controller helm lint)
 
 ---
@@ -201,7 +202,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 11: GPU & Confidential Compute Scheduling — [Sprint 12] (optional)
+### Phase 11: GPU & Confidential Compute Scheduling — (not planned)
 
 **Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
 
