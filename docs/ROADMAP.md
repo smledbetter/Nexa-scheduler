@@ -19,7 +19,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 2. **Native Go rules engine** — no OPA for MVP. The policies (region match, node cleanliness, privacy level) are simple predicates that map directly to Filter/Score plugins. OPA adds Rego complexity and a dependency for what amounts to 20 lines of Go per policy. OPA integration can be added later if policy complexity demands it.
 
-3. **ConfigMap first, CRD later** — ConfigMap for policy configuration in MVP. CRDs require kubebuilder scaffolding and code generation. Phase 4 delivers ConfigMap; Phase 7 upgrades to CRD once the policy model is proven.
+3. **ConfigMap first, CRD later** — ConfigMap for policy configuration in MVP. CRDs require kubebuilder scaffolding and code generation. Phase 3 delivers ConfigMap; Phase 8 upgrades to CRD once the policy model is proven.
 
 4. **Labels, not taints, for node state** — The PRD suggests taints/tolerations for node cleanliness. Labels and annotations are better: they let the scheduler make nuanced decisions (e.g., score clean nodes higher) rather than binary taint-based exclusion. Labels: `nexa.io/wiped`, `nexa.io/last-workload-org`, `nexa.io/wipe-on-complete`.
 
@@ -47,36 +47,23 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 2: Region & Zone Affinity Filter — [Sprint 2]
+### Phase 2: Region & Privacy Filters — [Sprint 2]
 
-**Goal:** Pods with `nexa.io/region` or `nexa.io/zone` labels are only placed on nodes matching those labels. Non-matching nodes are filtered out. Nodes with exact matches score higher than nodes with partial matches (same region, different zone).
+**Goal:** Both core scheduling plugins get real logic. Pods with `nexa.io/region` or `nexa.io/zone` labels are only placed on matching nodes. Pods with `nexa.io/privacy=high` require clean nodes (`nexa.io/wiped=true`) and org-based anti-affinity.
 
 **Deliverables:**
-- Filter plugin: reject nodes not matching pod's region/zone labels
-- Score plugin: prefer exact zone match > same region > no preference
-- ConfigMap reader for default region/zone policies
-- Unit tests with fake framework handles (at least 10 test cases covering: exact match, region-only, zone-only, no labels, conflicting labels, missing node labels)
-- Integration test with a fake scheduler
+- Test helper: construct `NodeInfo` from `v1.Node` specs for realistic unit tests
+- Region Filter plugin: reject nodes not matching pod's region/zone labels
+- Region Score plugin: prefer exact zone match > same region > no preference
+- Privacy Filter plugin: enforce node cleanliness for high-privacy pods; org-based anti-affinity (reject nodes with pods from different orgs)
+- Privacy Score plugin: prefer cleaner nodes (wiped > idle > busy-same-org)
+- Unit tests: 20+ cases across both plugins (exact match, region-only, zone-only, no labels, conflicting labels, missing node labels, node dirty/clean states, org matching, privacy levels high/standard/none, malformed labels)
 
-**Estimated LOC:** 500–800
+**Estimated LOC:** 1000–1500
 
 ---
 
-### Phase 3: Privacy & Node Cleanliness Filter — [Sprint 3]
-
-**Goal:** Pods with `nexa.io/privacy=high` are only placed on nodes labeled `nexa.io/wiped=true` and not currently running workloads from a different organization. Anti-affinity enforcement based on `nexa.io/org` labels.
-
-**Deliverables:**
-- Filter plugin: enforce node cleanliness for high-privacy pods
-- Filter plugin: org-based anti-affinity (reject nodes with pods from different orgs)
-- Score plugin: prefer cleaner nodes (wiped > idle > busy-same-org)
-- Unit tests (node dirty/clean states, org matching, privacy levels: high/standard/none)
-
-**Estimated LOC:** 700–1000
-
----
-
-### Phase 4: Policy Configuration via ConfigMap — [Sprint 4]
+### Phase 3: Policy Configuration via ConfigMap — [Sprint 3]
 
 **Goal:** Scheduling policies are defined in a ConfigMap (`nexa-scheduler-config`) and dynamically loaded. Policies specify which labels trigger which filters and what the default behavior is.
 
@@ -92,7 +79,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 5: Audit Logging — [Sprint 5]
+### Phase 4: Audit Logging — [Sprint 4]
 
 **Goal:** Every scheduling decision is logged as structured JSON: which pod, which node was selected, which nodes were filtered (and why), which policies applied.
 
@@ -107,7 +94,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 6: Prometheus Metrics — [Sprint 6]
+### Phase 5: Prometheus Metrics — [Sprint 5]
 
 **Goal:** Expose scheduling metrics at `/metrics` for Prometheus scraping.
 
@@ -121,45 +108,14 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 7: GPU-Aware Scheduling — [Sprint 7]
-
-**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups.
-
-**Deliverables:**
-- GPU topology Score plugin: prefer nodes where requested GPU count aligns with available contiguous GPUs; score based on `nvidia.com/gpu` extended resources and topology labels (`nexa.io/gpu-topology`, `nexa.io/nvlink-group`)
-- Gang-scheduling Permit plugin: hold pods belonging to a job group (`nexa.io/gang-group`) until all members are schedulable, then release together; timeout with configurable grace period
-- Preemption priority integration: priority classes for training vs. inference vs. batch workloads; configurable preemption policies in the policy engine (which job types can preempt which)
-- Filter plugin: reject nodes without sufficient GPU resources or incompatible accelerator type (`nexa.io/accelerator-type`: A100, H100, etc.)
-- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering
-
-**Estimated LOC:** 800–1200
-
----
-
-### Phase 8: CRD Policy & Node State Controller — [Sprint 8]
-
-**Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
-
-**Deliverables:**
-- `NexaPolicy` CRD definition (kubebuilder or hand-written)
-- CRD controller that watches NexaPolicy resources and configures the scheduler
-- Node State Controller binary: watches node events, manages `nexa.io/*` labels
-- Migration path from ConfigMap to CRD (support both, prefer CRD)
-- Unit and integration tests
-
-**Estimated LOC:** 1200–1800
-
----
-
-### Phase 9: Helm Chart & Deployment — [Sprint 9]
+### Phase 6: Helm Chart & Deployment — [Sprint 6]
 
 **Goal:** One-command installation via Helm with sensible defaults.
 
 **Deliverables:**
-- Helm chart: scheduler deployment, RBAC, ServiceAccount, ConfigMap/CRD
-- Helm chart: Node State Controller deployment (optional subchart)
+- Helm chart: scheduler deployment, RBAC, ServiceAccount, ConfigMap
 - Values file with documented options
-- RBAC: minimal permissions (scheduler reads pods/nodes; controller writes node labels)
+- RBAC: minimal permissions (scheduler reads pods/nodes)
 - CI: chart linting and template validation
 - Sample manifests for non-Helm users
 
@@ -167,7 +123,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 10: Documentation & Hardening — [Sprint 10]
+### Phase 7: Documentation & Hardening — [Sprint 7]
 
 **Goal:** Production-ready documentation and edge case handling.
 
@@ -180,3 +136,34 @@ These refine or override the PRD where the original recommendations were impreci
 - End-to-end test suite (Kind-based)
 
 **Estimated LOC:** 500–1000
+
+---
+
+### Phase 8: CRD Policy & Node State Controller — [Sprint 8]
+
+**Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
+
+**Deliverables:**
+- `NexaPolicy` CRD definition (kubebuilder or hand-written)
+- CRD controller that watches NexaPolicy resources and configures the scheduler
+- Node State Controller binary: watches node events, manages `nexa.io/*` labels
+- Migration path from ConfigMap to CRD (support both, prefer CRD)
+- Helm subchart for Node State Controller
+- Unit and integration tests
+
+**Estimated LOC:** 1200–1800
+
+---
+
+### Phase 9: GPU-Aware Scheduling — [Sprint 9] (optional)
+
+**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups.
+
+**Deliverables:**
+- GPU topology Score plugin: prefer nodes where requested GPU count aligns with available contiguous GPUs; score based on `nvidia.com/gpu` extended resources and topology labels (`nexa.io/gpu-topology`, `nexa.io/nvlink-group`)
+- Gang-scheduling Permit plugin: hold pods belonging to a job group (`nexa.io/gang-group`) until all members are schedulable, then release together; timeout with configurable grace period
+- Preemption priority integration: priority classes for training vs. inference vs. batch workloads; configurable preemption policies in the policy engine (which job types can preempt which)
+- Filter plugin: reject nodes without sufficient GPU resources or incompatible accelerator type (`nexa.io/accelerator-type`: A100, H100, etc.)
+- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering
+
+**Estimated LOC:** 800–1200
