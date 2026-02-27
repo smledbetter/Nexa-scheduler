@@ -4,8 +4,8 @@ package main
 import (
 	"os"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/component-base/cli"
+	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app"
 
 	"github.com/nexascheduler/nexa/pkg/metrics"
@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	metrics.Register(prometheus.DefaultRegisterer)
+	metrics.Register(legacyregistry.Registerer())
 	command := app.NewSchedulerCommand(
 		app.WithPlugin(region.Name, region.New),
 		app.WithPlugin(privacy.Name, privacy.New),

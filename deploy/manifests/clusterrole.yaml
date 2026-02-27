@@ -5,39 +5,42 @@ metadata:
   labels:
     app.kubernetes.io/name: nexa-scheduler
 rules:
-  # Read pods for scheduling decisions
+  # --- Core scheduling ---
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
-  # Bind pods to nodes (core scheduler function)
   - apiGroups: [""]
     resources: ["pods/binding"]
     verbs: ["create"]
-  # Update pod status and conditions
   - apiGroups: [""]
     resources: ["pods/status"]
     verbs: ["patch", "update"]
-  # Read node labels and capacity
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
-  # Emit scheduling events
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch", "update"]
-  # Read policy ConfigMap
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
-  # Leader election
+  # --- Framework informer requirements ---
+  - apiGroups: [""]
+    resources: ["namespaces", "services", "replicationcontrollers", "persistentvolumes", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceslices", "resourceclaims", "deviceclasses"]
+    verbs: ["get", "list", "watch"]
+  # --- Leader election ---
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["create", "get", "update"]
-  # Read ReplicaSets for preemption decisions
-  - apiGroups: ["apps"]
-    resources: ["replicasets"]
-    verbs: ["get", "list", "watch"]
-  # Read StatefulSets for preemption decisions
-  - apiGroups: ["apps"]
-    resources: ["statefulsets"]
-    verbs: ["get", "list", "watch"]

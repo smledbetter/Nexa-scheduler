@@ -34,6 +34,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config=/etc/nexa-scheduler/scheduler-config.yaml
+            - --authorization-always-allow-paths=/metrics,/healthz,/readyz,/livez
           ports:
             - name: https
               containerPort: 10259
