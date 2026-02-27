@@ -2,11 +2,11 @@
 
 ## Current State
 
-- **Tests:** 38 (75 subtests)
-- **Coverage:** ~89% overall (89.4% audit, 93.8% privacy, 90.9% region, 72.2% policy, 100% testing)
-- **LOC:** ~2600 (application code, excluding go.sum/config)
+- **Tests:** 52 (134 subtests)
+- **Coverage:** ~90% overall (100% metrics, 90.0% audit, 91.3% privacy, 88.1% region, 72.2% policy, 100% testing)
+- **LOC:** ~3200 (application code, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
-- **Milestone status:** Sprint 4 (Phase 4) complete. Sprint 5 next.
+- **Milestone status:** Sprint 5 (Phase 5) complete. Sprint 6 next.
 - **Gates:** All 4 passing (build, lint, test, coverage)
 
 ---
@@ -95,7 +95,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 5: Prometheus Metrics — [Sprint 5]
+### Phase 5: Prometheus Metrics — [Sprint 5] ✅
 
 **Goal:** Expose scheduling metrics at `/metrics` for Prometheus scraping.
 
@@ -157,15 +157,32 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 9: GPU-Aware Scheduling — [Sprint 9] (optional)
+### Phase 9: GPU & Confidential Compute Scheduling — [Sprint 9] (optional)
 
-**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups.
+**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
 
 **Deliverables:**
+
+*GPU scheduling:*
 - GPU topology Score plugin: prefer nodes where requested GPU count aligns with available contiguous GPUs; score based on `nvidia.com/gpu` extended resources and topology labels (`nexa.io/gpu-topology`, `nexa.io/nvlink-group`)
 - Gang-scheduling Permit plugin: hold pods belonging to a job group (`nexa.io/gang-group`) until all members are schedulable, then release together; timeout with configurable grace period
 - Preemption priority integration: priority classes for training vs. inference vs. batch workloads; configurable preemption policies in the policy engine (which job types can preempt which)
 - Filter plugin: reject nodes without sufficient GPU resources or incompatible accelerator type (`nexa.io/accelerator-type`: A100, H100, etc.)
-- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering
 
-**Estimated LOC:** 800–1200
+*Confidential compute scheduling:*
+- New node labels: `nexa.io/tee` (values: `tdx`, `sev-snp`, `none`), `nexa.io/confidential` (boolean), `nexa.io/disk-encrypted` (boolean)
+- Confidential Filter plugin: reject non-TEE nodes for pods with `nexa.io/confidential=required`; reject nodes without disk encryption for pods with `nexa.io/privacy=high`
+- Confidential Score plugin: prefer TEE-capable nodes for `privacy=high` workloads; prefer nodes with matching TEE type when pod specifies `nexa.io/tee-type`
+- Policy rule: `privacy=high` + `gpu=required` → require `nexa.io/confidential=true` node (configurable via CRD or ConfigMap)
+- runtimeClass constraint: policy can require `runtimeClassName: kata-cc` (or similar) for confidential workloads; validated at Filter time
+
+*Shared:*
+- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering, TEE label filtering, confidential+GPU policy composition, runtimeClass enforcement
+- Threat model addendum (cross-ref Phase 7): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
+
+**Known limitations (to document, not solve):**
+- Node labels are self-reported. Without remote attestation, `nexa.io/confidential=true` is a policy signal, not a cryptographic guarantee. Attestation integration is a future phase.
+- No mainstream GPU offers full VRAM encryption. Confidential GPU compute is a hardware industry gap, not a scheduling gap.
+- Confidential Containers (CoCo/Kata) add overhead. Policy should make confidential placement opt-in, not default.
+
+**Estimated LOC:** 1000–1500
