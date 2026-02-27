@@ -2,11 +2,11 @@
 
 ## Current State
 
-- **Tests:** 30 (65 subtests)
-- **Coverage:** 90.1% overall (93.8% privacy, 90.9% region, 72.2% policy, 100% testing)
-- **LOC:** ~1890 (application code, excluding go.sum/config)
+- **Tests:** 38 (75 subtests)
+- **Coverage:** ~89% overall (89.4% audit, 93.8% privacy, 90.9% region, 72.2% policy, 100% testing)
+- **LOC:** ~2600 (application code, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
-- **Milestone status:** Sprint 3 (Phase 3) complete. Sprint 4 next.
+- **Milestone status:** Sprint 4 (Phase 4) complete. Sprint 5 next.
 - **Gates:** All 4 passing (build, lint, test, coverage)
 
 ---
@@ -80,7 +80,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 4: Audit Logging — [Sprint 4]
+### Phase 4: Audit Logging — [Sprint 4] ✅
 
 **Goal:** Every scheduling decision is logged as structured JSON: which pod, which node was selected, which nodes were filtered (and why), which policies applied.
 
