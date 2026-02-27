@@ -7,7 +7,8 @@
 - **LOC:** ~5200 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Milestone status:** Sprint 8 (Phase 8) complete. Sprint 9 next.
+- **Docs:** Quickstart, architecture, threat model, integration guide (docs/)
+- **Milestone status:** Sprint 9 (Phase 9) complete. Sprint 10 next.
 - **Gates:** All 7 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet)
 
 ---
@@ -157,7 +158,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 9: Documentation — [Sprint 9]
+### Phase 9: Documentation — [Sprint 9] ✅
 
 **Goal:** Production-ready documentation for operators and contributors.
 
@@ -167,7 +168,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Threat model (attack surfaces, mitigations)
 - Integration guide (existing schedulers, monitoring, CI/CD)
 
-**Estimated LOC:** 400–700 (markdown/docs)
+**Estimated LOC:** 400–700 (markdown/docs) (actual: 912)
 
 ---
 
