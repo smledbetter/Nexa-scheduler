@@ -179,16 +179,22 @@ When all gates pass, say: "Ready for Phase 3: SHIP whenever you want to proceed.
 
 4. **Do NOT apply skill changes** -- proposals stay in the retro for human review
 
-5. **Commit**: `git add -A && git commit -m "sprint N: [description]"`
+5. **Roadmap review** -- Before writing the next baseline, review `docs/ROADMAP.md` against what this sprint revealed. Ask:
+   - **Scope check:** Should adjacent phases merge (too small separately) or split (too large)? Compare estimated LOC to actual LOC from this sprint as a calibration.
+   - **Order check:** Should any later phase move earlier (blocker or prerequisite discovered) or later (less critical than assumed)?
+   - **Dependency check:** Did this sprint surface a prerequisite (test helpers, new deps, tooling) that a future phase assumes exists but doesn't? Add it to that phase's deliverables.
+   - If changes are needed, apply them to `docs/ROADMAP.md` and commit separately with a descriptive message. If no changes are needed, note "Roadmap reviewed — no changes" in the retro.
 
-6. **Write next baseline** at `~/.flowstate/nexa-scheduler/metrics/baseline-sprint-{N+1}.md`:
+6. **Commit**: `git add -A && git commit -m "sprint N: [description]"`
+
+7. **Write next baseline** at `~/.flowstate/nexa-scheduler/metrics/baseline-sprint-{N+1}.md`:
    - Current git SHA, test count, coverage %, lint error count
    - Gate commands and current status
    - 5 H7 instructions to audit next sprint (rotate from skills)
 
-7. **Update roadmap**: mark this phase done in `docs/ROADMAP.md`, update Current State section
+8. **Update roadmap**: mark this phase done in `docs/ROADMAP.md`, update Current State section
 
-8. **Write progress file** at `~/.flowstate/nexa-scheduler/progress.md`:
+9. **Write progress file** at `~/.flowstate/nexa-scheduler/progress.md`:
    - What was completed this sprint (list of deliverables)
    - What failed or was deferred (and why)
    - What the next session should do first
@@ -196,7 +202,7 @@ When all gates pass, say: "Ready for Phase 3: SHIP whenever you want to proceed.
    - Current gate status (all passing? which ones?)
    This is operational state for the next agent session, not analysis. Overwrite any previous progress.md.
 
-9. **Completion check** -- print this checklist with [x] or [MISSING] for each:
+10. **Completion check** -- print this checklist with [x] or [MISSING] for each:
    - metrics/sprint-N-metrics.json exists (raw MCP metrics response)
    - metrics/sprint-N-import.json exists (complete import-ready JSON, validated via MCP dry_run)
    - retrospectives/sprint-N.md has hypothesis table (H1, H5, H7) and change proposals
