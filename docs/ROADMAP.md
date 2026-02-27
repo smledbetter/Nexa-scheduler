@@ -2,14 +2,14 @@
 
 ## Current State
 
-- **Tests:** 59 top-level (154 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~95% overall (100% metrics, 90.0% audit, 94.2% privacy, 92.5% region, 100% policy, 100% testing)
-- **LOC:** ~5200 (application + deployment, excluding go.sum/config)
+- **Tests:** 66 top-level (+ 7 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~80% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 64.3% policy, 48.9% nodestate, 100% testing)
+- **LOC:** ~6755 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
 - **Docs:** Quickstart, architecture, threat model, integration guide (docs/)
-- **Milestone status:** Sprint 9 (Phase 9) complete. Sprint 10 next.
-- **Gates:** All 7 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet)
+- **Milestone status:** Sprint 10 (Phase 10) complete. Sprint 11 next.
+- **Gates:** All 9 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet, + CRD helm lint, node controller helm lint)
 
 ---
 
@@ -172,7 +172,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 10: CRD Policy & Node State Controller — [Sprint 10]
+### Phase 10: CRD Policy & Node State Controller — [Sprint 10] ✅
 
 **Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
 
@@ -184,7 +184,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Helm subchart for Node State Controller
 - Unit and integration tests
 
-**Estimated LOC:** 1200–1800
+**Estimated LOC:** 1200–1800 (actual: 1555)
 
 ---
 
