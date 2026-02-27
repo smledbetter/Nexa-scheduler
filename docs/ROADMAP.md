@@ -2,16 +2,16 @@
 
 ## Current State
 
-- **Status:** Milestone 1 complete (admission webhook + Kueue integration shipped). Starting Milestone 2.
-- **Tests:** 82 top-level (+ 16 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing, 93.2% webhook)
-- **LOC:** ~9450 (application + deployment, excluding go.sum/config)
-- **Binaries:** 3 (scheduler, node controller, webhook)
+- **Status:** Milestone 2 complete (compliance report CLI shipped). Starting Milestone 3.
+- **Tests:** 98 top-level (+ 16 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing, 93.2% webhook, 92.8% compliance)
+- **LOC:** ~10170 (application + deployment, excluding go.sum/config)
+- **Binaries:** 4 (scheduler, node controller, webhook, compliance CLI)
 - **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide with Kueue section (docs/)
-- **Sprints completed:** 14 (Sprint 0–13), across 13 phases
+- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide with Kueue + immutable audit storage sections (docs/)
+- **Sprints completed:** 15 (Sprint 0–14), across 14 phases
 - **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
@@ -257,11 +257,11 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Milestone 2: Compliance Evidence — [Sprint 14]
+### Milestone 2: Compliance Evidence — [Sprint 14] ✅
 
 **Goal:** A compliance officer can produce audit evidence for SOC2/HIPAA/GDPR without parsing JSON. The evidence chain is complete: admission validation (M1) → scheduling enforcement → audit report.
 
-#### Phase 13: Compliance Report Generation — [Sprint 14]
+#### Phase 13: Compliance Report Generation — [Sprint 14] ✅
 
 **Goal:** CLI tool that reads structured JSON audit logs and produces compliance artifacts: workload inventory, node placement map, isolation compliance, policy timeline, geographic residency.
 
@@ -277,7 +277,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Integration guide: "Immutable Audit Storage" section with S3 Object Lock and Loki retention examples (documentation, not code — log shipping is operator infrastructure)
 - Unit tests for parsing, aggregation, and report generation
 
-**Estimated LOC:** 300–400
+**Estimated LOC:** 300–400 (actual: 720 — includes 16 test functions and CLI boilerplate)
 
 ---
 
