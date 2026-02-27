@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	fwk "k8s.io/kube-scheduler/framework"
@@ -374,5 +375,124 @@ func TestScoreDisabledPlugin(t *testing.T) {
 	}
 	if score != 0 {
 		t.Errorf("disabled plugin Score() = %d, want 0", score)
+	}
+}
+
+func TestFilterCooldown(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	fixedNow := func() time.Time { return now }
+
+	provider := &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{
+		Enabled:       true,
+		CooldownHours: 24,
+	}}}
+
+	tests := []struct {
+		name       string
+		nodeLabels map[string]string
+		wantPass   bool
+		wantReason string
+	}{
+		{
+			name: "recent wipe — accept",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": now.Add(-2 * time.Hour).Format(time.RFC3339),
+			},
+			wantPass: true,
+		},
+		{
+			name: "stale wipe — reject",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": now.Add(-48 * time.Hour).Format(time.RFC3339),
+			},
+			wantPass:   false,
+			wantReason: "exceeds cooldown",
+		},
+		{
+			name: "missing wipe-timestamp — reject (fail-closed)",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped": "true",
+			},
+			wantPass:   false,
+			wantReason: "missing nexa.io/wipe-timestamp",
+		},
+		{
+			name: "malformed wipe-timestamp — reject",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": "not-a-timestamp",
+			},
+			wantPass:   false,
+			wantReason: "malformed wipe-timestamp",
+		},
+		{
+			name: "future timestamp (clock skew) — accept",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": now.Add(1 * time.Hour).Format(time.RFC3339),
+			},
+			wantPass: true,
+		},
+		{
+			name: "exactly at cooldown boundary — accept",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": now.Add(-24 * time.Hour).Format(time.RFC3339),
+			},
+			wantPass: true,
+		},
+		{
+			name: "one second past cooldown — reject",
+			nodeLabels: map[string]string{
+				"nexa.io/wiped":          "true",
+				"nexa.io/wipe-timestamp": now.Add(-24*time.Hour - time.Second).Format(time.RFC3339),
+			},
+			wantPass:   false,
+			wantReason: "exceeds cooldown",
+		},
+	}
+
+	p := NewWithProvider(provider, fixedNow)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
+			node := nt.MakeNode("test-node", tt.nodeLabels)
+			nodeInfo := nt.MakeNodeInfo(node)
+
+			status := p.Filter(context.Background(), nil, pod, nodeInfo)
+			if tt.wantPass {
+				if status != nil && !status.IsSuccess() {
+					t.Errorf("expected accept, got reject: %s", status.Message())
+				}
+			} else {
+				if status == nil || status.IsSuccess() {
+					t.Error("expected reject, got accept")
+				} else if status.Code() != fwk.Unschedulable {
+					t.Errorf("code = %v, want Unschedulable", status.Code())
+				} else if tt.wantReason != "" && !strings.Contains(status.Message(), tt.wantReason) {
+					t.Errorf("reason %q not found in %q", tt.wantReason, status.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestFilterCooldownDisabled(t *testing.T) {
+	// CooldownHours=0 means disabled — existing behavior unchanged.
+	provider := &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{
+		Enabled:       true,
+		CooldownHours: 0,
+	}}}
+	p := &Plugin{policy: provider}
+
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
+	node := nt.MakeNode("test-node", map[string]string{"nexa.io/wiped": "true"})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if status != nil && !status.IsSuccess() {
+		t.Errorf("cooldown disabled should accept wiped node without timestamp, got: %s", status.Message())
 	}
 }

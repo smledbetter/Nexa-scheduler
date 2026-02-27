@@ -10,6 +10,7 @@ import (
 
 	"github.com/nexascheduler/nexa/pkg/metrics"
 	"github.com/nexascheduler/nexa/pkg/plugins/audit"
+	"github.com/nexascheduler/nexa/pkg/plugins/confidential"
 	"github.com/nexascheduler/nexa/pkg/plugins/privacy"
 	"github.com/nexascheduler/nexa/pkg/plugins/region"
 )
@@ -19,6 +20,7 @@ func main() {
 	command := app.NewSchedulerCommand(
 		app.WithPlugin(region.Name, region.New),
 		app.WithPlugin(privacy.Name, privacy.New),
+		app.WithPlugin(confidential.Name, confidential.New),
 		app.WithPlugin(audit.Name, audit.New),
 	)
 	code := cli.Run(command)

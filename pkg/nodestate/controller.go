@@ -164,6 +164,7 @@ func (c *Controller) reconcileNode(ctx context.Context, nodeName string) error {
 	// If wipe-on-complete is set and a pod just finished, mark the node as dirty.
 	if node.Labels[LabelWipeOnComplete] == "true" && node.Labels[LabelWiped] == "true" && !latestTermination.IsZero() {
 		patchLabels[LabelWiped] = "false"
+		patchLabels[LabelWipeTimestamp] = nil // remove stale timestamp
 		changed = true
 		klog.InfoS("marking node as dirty (wipe-on-complete)", "node", nodeName)
 	}

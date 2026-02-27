@@ -147,26 +147,32 @@ func labelWorkers(t tb) {
 		t.Fatalf("expected 3 workers, got %d", len(workers))
 	}
 
-	// Worker-0: us-west1 / us-west1-a / wiped / org=alpha
+	// Worker-0: us-west1 / us-west1-a / wiped / org=alpha / TEE=tdx / encrypted
 	runCmd(t, "kubectl", "label", "node", workers[0],
 		"nexa.io/region=us-west1",
 		"nexa.io/zone=us-west1-a",
 		"nexa.io/wiped=true",
 		"nexa.io/last-workload-org=alpha",
+		"nexa.io/tee=tdx",
+		"nexa.io/confidential=true",
+		"nexa.io/disk-encrypted=true",
 		"--overwrite",
 	)
-	// Worker-1: us-west1 / us-west1-b / not wiped / no org
+	// Worker-1: us-west1 / us-west1-b / not wiped / no org / no TEE
 	runCmd(t, "kubectl", "label", "node", workers[1],
 		"nexa.io/region=us-west1",
 		"nexa.io/zone=us-west1-b",
 		"--overwrite",
 	)
-	// Worker-2: eu-west1 / eu-west1-a / wiped / org=beta
+	// Worker-2: eu-west1 / eu-west1-a / wiped / org=beta / TEE=sev-snp / encrypted
 	runCmd(t, "kubectl", "label", "node", workers[2],
 		"nexa.io/region=eu-west1",
 		"nexa.io/zone=eu-west1-a",
 		"nexa.io/wiped=true",
 		"nexa.io/last-workload-org=beta",
+		"nexa.io/tee=sev-snp",
+		"nexa.io/confidential=true",
+		"nexa.io/disk-encrypted=true",
 		"--overwrite",
 	)
 }

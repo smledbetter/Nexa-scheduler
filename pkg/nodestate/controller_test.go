@@ -58,11 +58,12 @@ func TestReconcileNode(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name          string
-		node          *v1.Node
-		pods          []*v1.Pod
-		wantLabels    map[string]string
-		wantNoPatches bool
+		name                 string
+		node                 *v1.Node
+		pods                 []*v1.Pod
+		wantLabels           map[string]string
+		wantNoPatches        bool
+		wantTimestampCleared bool
 	}{
 		{
 			name: "pod completes — updates last workload org",
@@ -144,6 +145,22 @@ func TestReconcileNode(t *testing.T) {
 			},
 		},
 		{
+			name: "wipe-on-complete clears wipe-timestamp",
+			node: makeTestNode("node1", map[string]string{
+				LabelWipeOnComplete: "true",
+				LabelWiped:          "true",
+				LabelWipeTimestamp:  "2026-03-01T10:00:00Z",
+			}),
+			pods: []*v1.Pod{
+				makeTestPod("pod1", "node1", "acme", v1.PodSucceeded, now),
+			},
+			wantLabels: map[string]string{
+				LabelLastWorkloadOrg: "acme",
+				LabelWiped:           "false",
+			},
+			wantTimestampCleared: true,
+		},
+		{
 			name: "wipe-on-complete but already dirty — no wipe change",
 			node: makeTestNode("node1", map[string]string{
 				LabelWipeOnComplete: "true",
@@ -221,6 +238,14 @@ func TestReconcileNode(t *testing.T) {
 					}
 					if got != want {
 						t.Errorf("label %q = %v, want %v", k, got, want)
+					}
+				}
+				if tt.wantTimestampCleared {
+					val, exists := gotLabels[LabelWipeTimestamp]
+					if !exists {
+						t.Error("expected wipe-timestamp in patch (set to null for removal)")
+					} else if val != nil {
+						t.Errorf("expected wipe-timestamp=null (removal), got %v", val)
 					}
 				}
 			}

@@ -152,15 +152,57 @@ All subsequent pods schedule without any Nexa constraints. The change appears in
 
 **Code reference:** `go.mod`, `go.sum`.
 
+### 8. TEE Node Labels — Self-Reported Attestation
+
+**Threat:** A node operator or compromised kubelet sets `nexa.io/tee=tdx` and `nexa.io/confidential=true` on a node that does not actually have TEE hardware. The confidential compute plugin trusts these labels at scheduling time.
+
+**Impact:** Workloads requiring confidential compute (hardware memory encryption, isolated execution) are placed on nodes without TEE protection. Data in memory is not encrypted and is vulnerable to physical or hypervisor-level attacks.
+
+**Mitigation:** Nexa treats TEE labels as policy signals, not cryptographic guarantees. This is consistent with the node label trust model (same as `nexa.io/wiped`). The label indicates the operator has attested the node's TEE capability through their own provisioning pipeline.
+
+**Recommendation:** Integrate with a remote attestation framework (e.g., Intel Trust Authority, AMD SEV-SNP attestation) to verify TEE claims before labeling nodes. This is a future enhancement — Nexa's label-based model is the scheduling layer; attestation belongs in the provisioning layer.
+
+**Status:** Accepted risk — documented limitation. Same trust model as all other `nexa.io/*` node labels.
+
+### 9. GPU VRAM Encryption Gap
+
+**Threat:** A pod scheduled to a TEE-capable node with `nexa.io/confidential=required` processes data on a GPU. GPU VRAM is not protected by CPU-level TEEs (Intel TDX, AMD SEV-SNP). Sensitive data in GPU memory is accessible to the hypervisor and co-tenant attacks.
+
+**Impact:** Confidential compute guarantee does not extend to GPU memory. AI/ML workloads using GPU acceleration may have sensitive model weights or training data exposed.
+
+**Mitigation:** This is a hardware industry limitation, not a scheduling gap. No mainstream GPU currently offers full VRAM encryption that integrates with CPU TEE attestation. Confidential GPU compute is an active research area (NVIDIA H100 Confidential Computing is early-stage).
+
+**Recommendation:** Document this limitation for operators. For truly confidential AI workloads, restrict to CPU-only compute until GPU confidential computing matures. The confidential compute plugin does not check for GPU presence — operators must make this trade-off.
+
+**Status:** Accepted risk — hardware limitation, not addressable at the scheduling layer.
+
+### 10. Wipe Timestamp Clock Skew
+
+**Threat:** A node's system clock is skewed (ahead or behind the scheduler's clock). The `nexa.io/wipe-timestamp` label contains an RFC3339 timestamp set by the operator/automation at wipe time. The privacy filter compares this against `time.Now()` on the scheduler pod.
+
+**Impact:**
+- **Node clock ahead:** Wipe timestamp appears to be in the future. The privacy filter accepts the node (duration since wipe is negative, always within cooldown). This is the safe direction — future timestamps are treated as "just wiped."
+- **Scheduler clock ahead:** Wipe appears older than it actually is. A freshly wiped node might be rejected as stale. This causes false rejections (availability impact, not security impact).
+- **Node clock behind:** Wipe timestamp is older than reality. A recently wiped node appears stale. Same as scheduler-ahead: false rejections.
+
+**Mitigation:** The fail-closed design means clock skew can cause false rejections but not false acceptances. NTP synchronization across the cluster is a prerequisite for correct operation (standard Kubernetes assumption).
+
+**Recommendation:** Ensure NTP is configured on all cluster nodes and the scheduler pod's host. A clock skew of more than `CooldownHours` would cause all wiped nodes to be rejected — monitor for scheduling failures if cooldown is enabled.
+
+**Status:** Accepted risk — mitigated by fail-closed design and NTP assumption.
+
 ## Residual Risks
 
 | Risk | Severity | Notes |
 |------|----------|-------|
-| Pod label spoofing | High | Requires admission webhook — outside scheduler scope |
+| Pod label spoofing | High | Mitigated by ValidatingAdmissionWebhook |
 | ConfigMap policy drift | Medium | Detectable via audit logs, but no automated alerting |
 | Metrics information disclosure | Low | ClusterIP-only, standard kube-scheduler practice |
-| Stale node labels | Medium | Mitigated by Phase 10 Node State Controller |
+| Stale node labels | Medium | Mitigated by Node State Controller |
 | Log volume under heavy load | Low | Every decision produces a JSON line; consider sampling for high-throughput clusters |
+| TEE label spoofing | Medium | Self-reported; requires external attestation for cryptographic guarantee |
+| GPU VRAM unencrypted | Medium | Hardware limitation; no scheduling-layer mitigation available |
+| Wipe timestamp clock skew | Low | Fail-closed design prevents false acceptances; NTP required |
 
 ## Recommendations Summary
 

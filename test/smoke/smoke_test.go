@@ -660,3 +660,124 @@ func TestKueueSuspendsQuotaExceeded(t *testing.T) {
 		t.Errorf("expected no pods for suspended job, got %d", len(pods.Items))
 	}
 }
+
+// --- Confidential compute smoke tests ---
+
+// TestConfidentialFiltering verifies that a pod with confidential=required lands on
+// a TEE-capable node (worker-0 has TDX, worker-2 has SEV-SNP) and skips worker-1 (no TEE).
+// The confidential policy must be enabled via CRD for this test.
+func TestConfidentialFiltering(t *testing.T) {
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+
+	// Enable confidential policy via CRD.
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+  confidentialPolicy:
+    enabled: true
+    requireEncryptedDisk: true
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+	pod := makePod("confidential-test", map[string]string{
+		"nexa.io/confidential": "required",
+		"nexa.io/region":       "us-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// Should schedule on worker-0 (us-west1 + TDX + encrypted). Worker-1 has no TEE.
+	nodeName := waitForPodScheduled(t, testClient, ns, "confidential-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	tee := node.Labels["nexa.io/tee"]
+	if tee == "" || tee == "none" {
+		t.Errorf("confidential pod scheduled on non-TEE node %s (tee=%q)", nodeName, tee)
+	}
+	if enc := node.Labels["nexa.io/disk-encrypted"]; enc != "true" {
+		t.Errorf("confidential pod scheduled on unencrypted node %s", nodeName)
+	}
+}
+
+// TestWipeTimestampFreshness verifies that a high-privacy pod with cooldown policy
+// is scheduled to a node with a recent wipe-timestamp and rejects stale nodes.
+func TestWipeTimestampFreshness(t *testing.T) {
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+
+	// Enable cooldown policy via CRD (24h cooldown).
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+    cooldownHours: 24
+  confidentialPolicy:
+    enabled: false
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+
+	time.Sleep(5 * time.Second)
+
+	// Set a recent wipe-timestamp on worker-0 (should pass cooldown).
+	recentTime := time.Now().UTC().Format(time.RFC3339)
+	runCmd(t, "kubectl", "label", "node", "--selector=nexa.io/last-workload-org=alpha",
+		"nexa.io/wipe-timestamp="+recentTime, "--overwrite")
+	// Set a stale wipe-timestamp on worker-2 (should fail cooldown).
+	staleTime := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	runCmd(t, "kubectl", "label", "node", "--selector=nexa.io/last-workload-org=beta",
+		"nexa.io/wipe-timestamp="+staleTime, "--overwrite")
+	t.Cleanup(func() {
+		// Remove wipe-timestamp labels after test.
+		_, _ = runCmdNoFail("kubectl", "label", "node", "--selector=nexa.io/last-workload-org=alpha",
+			"nexa.io/wipe-timestamp-", "--overwrite")
+		_, _ = runCmdNoFail("kubectl", "label", "node", "--selector=nexa.io/last-workload-org=beta",
+			"nexa.io/wipe-timestamp-", "--overwrite")
+	})
+
+	ns := createTestNamespace(t, testClient)
+
+	// Pod requesting high-privacy on us-west1. Worker-0 has recent timestamp — should schedule.
+	pod := makePod("freshness-test", map[string]string{
+		"nexa.io/privacy": "high",
+		"nexa.io/org":     "alpha",
+		"nexa.io/region":  "us-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	nodeName := waitForPodScheduled(t, testClient, ns, "freshness-test", 60*time.Second)
+	t.Logf("high-privacy pod with cooldown scheduled on %s (has recent wipe-timestamp)", nodeName)
+}

@@ -13,6 +13,11 @@ const (
 	// LabelWipeOnComplete indicates the node should be marked dirty after workload completion.
 	LabelWipeOnComplete = "nexa.io/wipe-on-complete"
 
+	// LabelWipeTimestamp records when the node was last wiped (RFC3339 format).
+	// Set by the operator/automation alongside LabelWiped=true.
+	// Cleared by the controller when marking a node dirty.
+	LabelWipeTimestamp = "nexa.io/wipe-timestamp"
+
 	// LabelOrg is the pod-level label identifying the organization that owns the workload.
 	LabelOrg = "nexa.io/org"
 )

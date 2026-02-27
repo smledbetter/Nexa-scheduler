@@ -6,6 +6,7 @@ package privacy
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,10 +22,11 @@ const (
 	Name = "NexaPrivacy"
 
 	// Label keys.
-	labelPrivacy      = "nexa.io/privacy"
-	labelOrg          = "nexa.io/org"
-	labelWiped        = "nexa.io/wiped"
-	labelLastWorkload = "nexa.io/last-workload-org"
+	labelPrivacy       = "nexa.io/privacy"
+	labelOrg           = "nexa.io/org"
+	labelWiped         = "nexa.io/wiped"
+	labelLastWorkload  = "nexa.io/last-workload-org"
+	labelWipeTimestamp = "nexa.io/wipe-timestamp"
 
 	// Privacy level that triggers strict filtering.
 	privacyHigh = "high"
@@ -32,8 +34,9 @@ const (
 
 // Plugin implements privacy-aware filtering and scoring based on node cleanliness.
 type Plugin struct {
-	handle framework.Handle
-	policy policy.Provider
+	handle  framework.Handle
+	policy  policy.Provider
+	nowFunc func() time.Time
 }
 
 var _ framework.FilterPlugin = (*Plugin)(nil)
@@ -110,6 +113,37 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 			"node %s is not wiped (nexa.io/wiped != true); run node wipe procedure before scheduling high-privacy workloads",
 			node.Name,
 		))
+	}
+
+	// Check 1b: Wipe freshness (cooldown).
+	if pol.Privacy.CooldownHours > 0 {
+		tsStr := node.Labels[labelWipeTimestamp]
+		if tsStr == "" {
+			recordIsolationViolation("stale_wipe")
+			metrics.RecordFilter(Name, "rejected")
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+				"node %s is missing nexa.io/wipe-timestamp; cooldown policy requires a wipe timestamp",
+				node.Name,
+			))
+		}
+		ts, err := time.Parse(time.RFC3339, tsStr)
+		if err != nil {
+			recordIsolationViolation("stale_wipe")
+			metrics.RecordFilter(Name, "rejected")
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+				"node %s has malformed wipe-timestamp %q; expected RFC3339 format",
+				node.Name, tsStr,
+			))
+		}
+		cooldown := time.Duration(pol.Privacy.CooldownHours) * time.Hour
+		if p.nowFunc().Sub(ts) > cooldown {
+			recordIsolationViolation("stale_wipe")
+			metrics.RecordFilter(Name, "rejected")
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+				"node %s wipe-timestamp %s exceeds cooldown of %dh; re-wipe the node",
+				node.Name, tsStr, pol.Privacy.CooldownHours,
+			))
+		}
 	}
 
 	podOrg := podLabel(pod, labelOrg)
@@ -194,8 +228,13 @@ func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
 
 // NewWithProvider creates a Privacy plugin with the given policy provider.
 // Used in tests and integration tests to inject a StaticProvider.
-func NewWithProvider(provider policy.Provider) *Plugin {
-	return &Plugin{policy: provider}
+// An optional nowFunc overrides time.Now for deterministic cooldown tests.
+func NewWithProvider(provider policy.Provider, nowFunc ...func() time.Time) *Plugin {
+	nf := time.Now
+	if len(nowFunc) > 0 && nowFunc[0] != nil {
+		nf = nowFunc[0]
+	}
+	return &Plugin{policy: provider, nowFunc: nf}
 }
 
 // New creates a new Privacy plugin with a composite policy provider (CRD + ConfigMap fallback).
@@ -204,7 +243,7 @@ func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plu
 	if err != nil {
 		return nil, fmt.Errorf("failed to create policy provider: %w", err)
 	}
-	return &Plugin{handle: h, policy: provider}, nil
+	return &Plugin{handle: h, policy: provider, nowFunc: time.Now}, nil
 }
 
 // recordIsolationViolation increments the isolation violation counter if metrics are registered.
