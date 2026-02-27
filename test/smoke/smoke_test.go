@@ -18,6 +18,7 @@ import (
 var (
 	testClient     kubernetes.Interface
 	webhookEnabled bool
+	kueueEnabled   bool
 )
 
 // TestMain manages the shared Kind cluster lifecycle.
@@ -81,6 +82,23 @@ func TestMain(m *testing.M) {
 		if t.failed {
 			// Webhook setup failure is non-fatal — run other tests.
 			fmt.Fprintf(os.Stderr, "webhook setup failed (non-fatal): %s\n", t.msg)
+			t.failed = false
+			t.msg = ""
+		}
+
+		// Set up Kueue for integration smoke tests.
+		installKueue(t)
+		if !t.failed {
+			kueueEnabled = true
+			defer uninstallKueue()
+			// Create shared ResourceFlavors (cluster-scoped, aligned with worker labels).
+			createResourceFlavor(t, "us-west1", map[string]string{"nexa.io/region": "us-west1"})
+			createResourceFlavor(t, "eu-west1", map[string]string{"nexa.io/region": "eu-west1"})
+			createResourceFlavor(t, "default-flavor", nil)
+		}
+		if t.failed {
+			// Kueue setup failure is non-fatal — run other tests.
+			fmt.Fprintf(os.Stderr, "kueue setup failed (non-fatal): %s\n", t.msg)
 			t.failed = false
 			t.msg = ""
 		}
@@ -517,5 +535,128 @@ func TestWebhookNoLabelsAdmitted(t *testing.T) {
 	_, err := testClient.CoreV1().Pods("webhook-nolabels").Create(context.Background(), pod, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("expected pod with no nexa.io labels to be admitted, got: %v", err)
+	}
+}
+
+// --- Kueue integration smoke tests ---
+
+// TestKueueAdmitNexaSchedule verifies the two-phase flow:
+// Kueue admits the workload (unsuspends the Job), then Nexa schedules the pod
+// to a node matching the region constraints.
+func TestKueueAdmitNexaSchedule(t *testing.T) {
+	if !kueueEnabled {
+		t.Skip("kueue not installed")
+	}
+	client := testClient
+	ns := createTestNamespace(t, client)
+
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	lqName := fmt.Sprintf("lq-%s", suffix)
+	setupKueueResources(t, ns, suffix, "us-west1", "4")
+
+	job := makeJob("kueue-nexa-admit", map[string]string{
+		"nexa.io/region":             "us-west1",
+		"kueue.x-k8s.io/queue-name": lqName,
+	})
+	_, err := client.BatchV1().Jobs(ns).Create(context.Background(), job, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	// Phase 1: Wait for Kueue to admit (unsuspend the Job).
+	waitForWorkloadAdmitted(t, client, ns, "kueue-nexa-admit", 120*time.Second)
+
+	// Phase 2: Wait for Nexa to schedule the pod.
+	nodeName := waitForJobPodScheduled(t, client, ns, "kueue-nexa-admit", 60*time.Second)
+
+	// Verify: pod landed on a us-west1 node.
+	node, err := client.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	if region := node.Labels["nexa.io/region"]; region != "us-west1" {
+		t.Errorf("pod scheduled on node %s with region=%q, want us-west1", nodeName, region)
+	}
+}
+
+// TestKueueAdmitNexaRejects verifies that when Kueue admits a workload but
+// no nodes satisfy Nexa's privacy constraints, the pod stays Pending.
+func TestKueueAdmitNexaRejects(t *testing.T) {
+	if !kueueEnabled {
+		t.Skip("kueue not installed")
+	}
+	client := testClient
+	ns := createTestNamespace(t, client)
+
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	lqName := fmt.Sprintf("lq-%s", suffix)
+	setupKueueResources(t, ns, suffix, "default-flavor", "4")
+
+	// org=gamma has no matching wiped node — Nexa will reject all nodes.
+	job := makeJob("kueue-nexa-reject", map[string]string{
+		"nexa.io/privacy":            "high",
+		"nexa.io/org":                "gamma",
+		"nexa.io/region":             "us-west1",
+		"kueue.x-k8s.io/queue-name": lqName,
+	})
+	_, err := client.BatchV1().Jobs(ns).Create(context.Background(), job, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	// Phase 1: Kueue admits the workload.
+	waitForWorkloadAdmitted(t, client, ns, "kueue-nexa-reject", 120*time.Second)
+
+	// Phase 2: Pod should stay Pending — Nexa filters all nodes.
+	waitForJobPodPending(t, client, ns, "kueue-nexa-reject", 15*time.Second)
+}
+
+// TestKueueSuspendsQuotaExceeded verifies that when Kueue's quota is exhausted,
+// the Job stays suspended and Nexa never sees the pod (no pod is created).
+func TestKueueSuspendsQuotaExceeded(t *testing.T) {
+	if !kueueEnabled {
+		t.Skip("kueue not installed")
+	}
+	client := testClient
+	ns := createTestNamespace(t, client)
+
+	// Create a ClusterQueue with minimal quota (1 CPU).
+	suffix := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
+	lqName := fmt.Sprintf("lq-%s", suffix)
+	setupKueueResources(t, ns, suffix, "default-flavor", "1")
+
+	// First job: consumes the entire quota (1 CPU).
+	job1 := makeJobWithResources("kueue-fill-quota", map[string]string{
+		"nexa.io/region":             "us-west1",
+		"kueue.x-k8s.io/queue-name": lqName,
+	}, "1", "512Mi")
+	_, err := client.BatchV1().Jobs(ns).Create(context.Background(), job1, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create job1: %v", err)
+	}
+	waitForWorkloadAdmitted(t, client, ns, "kueue-fill-quota", 120*time.Second)
+
+	// Second job: should stay suspended (quota exhausted).
+	job2 := makeJobWithResources("kueue-quota-blocked", map[string]string{
+		"nexa.io/region":             "us-west1",
+		"kueue.x-k8s.io/queue-name": lqName,
+	}, "1", "512Mi")
+	_, err = client.BatchV1().Jobs(ns).Create(context.Background(), job2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create job2: %v", err)
+	}
+
+	// Job2 should stay suspended — Kueue won't admit it.
+	waitForJobSuspended(t, client, ns, "kueue-quota-blocked", 15*time.Second)
+
+	// Verify no pod was created for the suspended job.
+	pods, err := client.CoreV1().Pods(ns).List(context.Background(), metav1.ListOptions{
+		LabelSelector: "job-name=kueue-quota-blocked",
+	})
+	if err != nil {
+		t.Fatalf("list pods: %v", err)
+	}
+	if len(pods.Items) > 0 {
+		t.Errorf("expected no pods for suspended job, got %d", len(pods.Items))
 	}
 }

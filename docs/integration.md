@@ -13,6 +13,197 @@ spec:
 
 Pods without this field (or with `schedulerName: default-scheduler`) are ignored by Nexa. Both schedulers can run simultaneously without conflict.
 
+## Running Nexa alongside Kueue
+
+[Kueue](https://kueue.sigs.k8s.io/) is the Kubernetes-native job queueing system. Kueue controls **when** a workload runs (quota, fairness, priority). Nexa controls **where** a workload lands (privacy, region, compliance). They complement each other and share no state, CRDs, or APIs.
+
+### Interaction Model
+
+```
+Job submitted (suspend: true)
+        │
+        ▼
+   ┌─────────┐
+   │  Kueue   │  Checks quota, fairness, priority
+   └────┬─────┘  Sets suspend: false when admitted
+        │
+        ▼
+   ┌─────────┐
+   │  Nexa    │  Filters nodes by region, privacy, org
+   └────┬─────┘  Scores and binds pod to best node
+        │
+        ▼
+   Pod running on compliant node
+```
+
+1. You submit a Job with `spec.suspend: true` and a `kueue.x-k8s.io/queue-name` label.
+2. Kueue evaluates quota and fairness. When resources are available, it sets `suspend: false`.
+3. The Job controller creates a Pod. Because `schedulerName: nexa-scheduler` is set in the pod template, the pod enters Nexa's scheduling queue.
+4. Nexa filters and scores nodes using privacy, region, and org policies, then binds the pod.
+
+If Kueue never admits the workload (quota exhausted), no pod is created and Nexa is never involved.
+
+### Prerequisites
+
+- Kueue v0.10+ installed (v0.16.x recommended, see compatibility matrix below)
+- Nexa Scheduler installed (any version)
+- Job pod template must set `schedulerName: nexa-scheduler`
+
+### Label Propagation
+
+Kueue manages Jobs, not bare Pods. Nexa reads labels from the Pod, not the Job. Labels must appear in **both** the Job metadata and the pod template:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: privacy-batch-job
+  labels:
+    kueue.x-k8s.io/queue-name: team-queue  # Kueue reads this
+spec:
+  suspend: true  # Kueue manages this field
+  template:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: team-queue  # propagated to pod
+        nexa.io/region: us-west1                # Nexa reads this
+        nexa.io/privacy: high                   # Nexa reads this
+        nexa.io/org: alpha                      # Nexa reads this
+    spec:
+      schedulerName: nexa-scheduler
+      restartPolicy: Never
+      containers:
+        - name: training
+          image: my-training:v1
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+```
+
+If `nexa.io/*` labels are only on the Job (not the pod template), Nexa will not see them and the pod will be scheduled without privacy or region constraints.
+
+### ResourceFlavor Alignment
+
+Kueue [ResourceFlavors](https://kueue.sigs.k8s.io/docs/concepts/resource_flavor/) can include `nodeLabels` that constrain which nodes a workload runs on. These constraints are **additive** to Nexa's region filter — both must be satisfiable.
+
+**Aligned configuration** (recommended):
+
+```yaml
+# Kueue ResourceFlavor
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: us-west1
+spec:
+  nodeLabels:
+    nexa.io/region: us-west1  # matches Nexa's region label
+```
+
+When a workload is admitted through this flavor, Kueue adds `nodeLabels` as a nodeSelector on the pod. Nexa's region filter independently verifies the same constraint. Both agree — no conflict.
+
+**Potential misconfiguration:**
+
+If a ResourceFlavor specifies `nexa.io/region: us-west1` but the pod template requests `nexa.io/region: eu-west1`, the intersection is empty and the pod will stay Pending. Diagnose with:
+
+```bash
+# Check Kueue workload admission status
+kubectl get workloads -n <namespace> -o wide
+
+# Check Nexa scheduler logs for filter rejections
+kubectl logs -n nexa-system -l app.kubernetes.io/name=nexa-scheduler | grep scheduling_failed
+```
+
+### Installation Example
+
+```bash
+# Install Kueue (v0.16.1)
+kubectl apply --server-side -f \
+  https://github.com/kubernetes-sigs/kueue/releases/download/v0.16.1/manifests.yaml
+
+# Install Nexa Scheduler
+helm install nexa-scheduler deploy/helm/nexa-scheduler/ \
+  --namespace nexa-system --create-namespace \
+  --set image.tag=v0.1.0
+
+# Install Nexa Node Controller (if using node state tracking)
+helm install nexa-node-controller deploy/helm/nexa-node-controller/ \
+  --namespace nexa-system
+
+# Install Nexa Webhook (if using label validation)
+helm install nexa-webhook deploy/helm/nexa-webhook/ \
+  --namespace nexa-system \
+  --set tls.caBundle=<base64-ca-bundle>
+```
+
+No shared Helm values are required. Each component has independent configuration.
+
+### Kueue Resource Setup
+
+A minimal Kueue setup for use with Nexa:
+
+```yaml
+# ResourceFlavor aligned with Nexa regions
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: us-west1
+spec:
+  nodeLabels:
+    nexa.io/region: us-west1
+---
+# ClusterQueue with quota
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: team-cluster-queue
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: us-west1
+          resources:
+            - name: cpu
+              nominalQuota: "100"
+            - name: memory
+              nominalQuota: "200Gi"
+---
+# LocalQueue in the team's namespace
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: team-queue
+  namespace: ml-team
+spec:
+  clusterQueue: team-cluster-queue
+```
+
+### Version Compatibility
+
+| Kueue Version | Nexa Version | Status | Notes |
+|---------------|--------------|--------|-------|
+| v0.16.x | v0.1.0+ | Tested | Smoke tested with 3 scenarios |
+| v0.10.x–v0.15.x | v0.1.0+ | Expected compatible | Same `v1beta1` API |
+| < v0.10 | — | Untested | Earlier API versions may differ |
+
+### Troubleshooting
+
+**Pod stays Pending after Kueue admits it:**
+- Check that the pod template has `schedulerName: nexa-scheduler` (not the default scheduler).
+- Check Nexa scheduler logs for filter rejections: the pod may fail region or privacy constraints.
+
+**Kueue never admits the workload:**
+- Verify the LocalQueue references a valid ClusterQueue: `kubectl get localqueue -n <ns> -o wide`.
+- Check ClusterQueue quota: `kubectl get clusterqueue <name> -o yaml` — look at `status.flavorsUsage`.
+
+**Labels not picked up by Nexa:**
+- Ensure `nexa.io/*` labels are on `.spec.template.metadata.labels`, not just `.metadata.labels`.
+- Use `kubectl get pod <name> -o jsonpath='{.metadata.labels}'` to verify labels on the created pod.
+
+**ResourceFlavor conflict:**
+- If both Kueue and Nexa constrain region, the intersection must be non-empty. A pod requesting `nexa.io/region: eu-west1` admitted through a `us-west1` flavor will never schedule.
+
 ## Monitoring
 
 ### Prometheus Scrape Configuration

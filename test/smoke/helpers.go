@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -420,4 +422,262 @@ func schedulerLogs(t *testing.T, client kubernetes.Interface) string {
 	}
 	out := runCmd(t, "kubectl", "logs", "-n", namespace, pods.Items[0].Name)
 	return out
+}
+
+// --- Kueue integration helpers ---
+
+const (
+	kueueVersion = "v0.16.1"
+	kueueNS      = "kueue-system"
+)
+
+// installKueue installs Kueue from the upstream release manifest.
+func installKueue(t tb) {
+	t.Helper()
+	url := fmt.Sprintf(
+		"https://github.com/kubernetes-sigs/kueue/releases/download/%s/manifests.yaml",
+		kueueVersion,
+	)
+	runCmd(t, "kubectl", "apply", "--server-side", "-f", url)
+	waitForKueueReady(t)
+}
+
+// uninstallKueue removes Kueue from the cluster.
+func uninstallKueue() {
+	url := fmt.Sprintf(
+		"https://github.com/kubernetes-sigs/kueue/releases/download/%s/manifests.yaml",
+		kueueVersion,
+	)
+	_, _ = runCmdNoFail("kubectl", "delete", "-f", url, "--ignore-not-found")
+}
+
+// waitForKueueReady waits until the Kueue controller-manager pod is Running and Ready.
+func waitForKueueReady(t tb) {
+	t.Helper()
+	deadline := time.Now().Add(180 * time.Second)
+	for time.Now().Before(deadline) {
+		pods, err := kubeClient(t).CoreV1().Pods(kueueNS).List(
+			context.Background(), metav1.ListOptions{
+				LabelSelector: "control-plane=controller-manager",
+			})
+		if err == nil && len(pods.Items) > 0 {
+			pod := pods.Items[0]
+			if pod.Status.Phase == "Running" {
+				for _, c := range pod.Status.Conditions {
+					if c.Type == "Ready" && c.Status == "True" {
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	t.Fatalf("kueue controller not ready within 180s")
+}
+
+// makeJob creates a batch/v1 Job targeting the Nexa scheduler.
+// The Job is created suspended (Kueue manages unsuspending on admission).
+func makeJob(name string, labels map[string]string) *batchv1.Job {
+	suspend := true
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: labels,
+		},
+		Spec: batchv1.JobSpec{
+			Suspend: &suspend,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					SchedulerName: "nexa-scheduler",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Containers: []corev1.Container{
+						{
+							Name:    "test",
+							Image:   "busybox:latest",
+							Command: []string{"sleep", "300"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// applyKueueResource creates a Kueue resource from inline YAML via kubectl.
+func applyKueueResource(t tb, yamlContent string) {
+	t.Helper()
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yamlContent)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("apply Kueue resource failed: %v\noutput: %s", err, out.String())
+	}
+}
+
+// deleteKueueResource deletes a Kueue resource by kind, name, and optional namespace.
+func deleteKueueResource(kind, name, ns string) {
+	args := []string{"delete", kind, name, "--ignore-not-found"}
+	if ns != "" {
+		args = append(args, "-n", ns)
+	}
+	_, _ = runCmdNoFail("kubectl", args...)
+}
+
+// createResourceFlavor creates a Kueue ResourceFlavor (cluster-scoped).
+func createResourceFlavor(t tb, name string, nodeLabels map[string]string) {
+	t.Helper()
+	labelsYAML := ""
+	for k, v := range nodeLabels {
+		labelsYAML += fmt.Sprintf("    %s: %q\n", k, v)
+	}
+	spec := ""
+	if labelsYAML != "" {
+		spec = fmt.Sprintf("spec:\n  nodeLabels:\n%s", labelsYAML)
+	}
+	yaml := fmt.Sprintf(`apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: %s
+%s`, name, spec)
+	applyKueueResource(t, yaml)
+}
+
+// setupKueueResources creates a ClusterQueue and LocalQueue for a test.
+// Returns after both resources exist. Cleanup is registered via t.Cleanup.
+func setupKueueResources(t *testing.T, ns, suffix, flavorName string, cpuQuota string) {
+	t.Helper()
+	cqName := fmt.Sprintf("cq-%s", suffix)
+	lqName := fmt.Sprintf("lq-%s", suffix)
+
+	cqYAML := fmt.Sprintf(`apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: %s
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: %s
+          resources:
+            - name: cpu
+              nominalQuota: "%s"
+            - name: memory
+              nominalQuota: "4Gi"
+`, cqName, flavorName, cpuQuota)
+	applyKueueResource(t, cqYAML)
+	t.Cleanup(func() { deleteKueueResource("clusterqueue", cqName, "") })
+
+	lqYAML := fmt.Sprintf(`apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  clusterQueue: %s
+`, lqName, ns, cqName)
+	applyKueueResource(t, lqYAML)
+	t.Cleanup(func() { deleteKueueResource("localqueue", lqName, ns) })
+}
+
+// waitForWorkloadAdmitted waits for Kueue to admit the workload (unsuspend the Job).
+func waitForWorkloadAdmitted(t *testing.T, client kubernetes.Interface, ns, jobName string, timeout time.Duration) {
+	t.Helper()
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, true,
+		func(ctx context.Context) (bool, error) {
+			job, err := client.BatchV1().Jobs(ns).Get(ctx, jobName, metav1.GetOptions{})
+			if err != nil {
+				return false, nil
+			}
+			if job.Spec.Suspend != nil && !*job.Spec.Suspend {
+				return true, nil
+			}
+			return false, nil
+		})
+	if err != nil {
+		t.Fatalf("job %s/%s not admitted by Kueue within %v: %v", ns, jobName, timeout, err)
+	}
+}
+
+// waitForJobSuspended verifies the Job stays suspended for the given duration.
+func waitForJobSuspended(t *testing.T, client kubernetes.Interface, ns, jobName string, checkDuration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(checkDuration)
+	for time.Now().Before(deadline) {
+		job, err := client.BatchV1().Jobs(ns).Get(context.Background(), jobName, metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+		if job.Spec.Suspend != nil && !*job.Spec.Suspend {
+			t.Fatalf("job %s/%s was unsuspended, expected to stay suspended", ns, jobName)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// waitForJobPodScheduled waits for a Job's pod to be scheduled by Nexa.
+// Returns the node name.
+func waitForJobPodScheduled(t *testing.T, client kubernetes.Interface, ns, jobName string, timeout time.Duration) string {
+	t.Helper()
+	var nodeName string
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, true,
+		func(ctx context.Context) (bool, error) {
+			pods, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+			})
+			if err != nil || len(pods.Items) == 0 {
+				return false, nil
+			}
+			for _, pod := range pods.Items {
+				if pod.Spec.NodeName != "" {
+					nodeName = pod.Spec.NodeName
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+	if err != nil {
+		t.Fatalf("job %s/%s pod not scheduled within %v: %v", ns, jobName, timeout, err)
+	}
+	return nodeName
+}
+
+// waitForJobPodPending verifies a Job's pod stays Pending (unscheduled) for the given duration.
+func waitForJobPodPending(t *testing.T, client kubernetes.Interface, ns, jobName string, checkDuration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(checkDuration)
+	for time.Now().Before(deadline) {
+		pods, err := client.CoreV1().Pods(ns).List(context.Background(), metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+		})
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+		for _, pod := range pods.Items {
+			if pod.Spec.NodeName != "" {
+				t.Fatalf("job pod %s/%s was scheduled on %s, expected to stay Pending",
+					ns, pod.Name, pod.Spec.NodeName)
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// makeJobWithResources creates a Job with explicit CPU and memory resource requests.
+func makeJobWithResources(name string, labels map[string]string, cpu, memory string) *batchv1.Job {
+	job := makeJob(name, labels)
+	job.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(cpu),
+			corev1.ResourceMemory: resource.MustParse(memory),
+		},
+	}
+	return job
 }
