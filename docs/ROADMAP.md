@@ -6,7 +6,7 @@
 - **Coverage:** N/A (no code yet)
 - **LOC:** 0 (application code)
 - **Go installed:** No — must install Go 1.23+ and golangci-lint before Sprint 1
-- **Milestone status:** Pre-MVP, planning complete
+- **Milestone status:** Sprint 0 (planning) complete. Sprint 1 next.
 
 ---
 
