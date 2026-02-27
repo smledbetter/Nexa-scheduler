@@ -320,3 +320,121 @@ func TestPolicyHotReload(t *testing.T) {
 	}`
 	_, _ = client.CoreV1().ConfigMaps(namespace).Update(context.Background(), cm, metav1.UpdateOptions{})
 }
+
+// --- CRD-based policy smoke tests ---
+
+// TestCRDPolicyScheduling verifies that when a NexaPolicy CRD is installed and a resource
+// is created, the scheduler uses the CRD policy for scheduling decisions.
+func TestCRDPolicyScheduling(t *testing.T) {
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+    defaultRegion: ""
+    defaultZone: ""
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+    strictOrgIsolation: false
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+
+	// Wait for the dynamic informer to pick up the CRD resource.
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+	pod := makePod("crd-region-test", map[string]string{
+		"nexa.io/region": "us-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	nodeName := waitForPodScheduled(t, testClient, ns, "crd-region-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	if region := node.Labels["nexa.io/region"]; region != "us-west1" {
+		t.Errorf("pod scheduled on node %s with region=%q, want us-west1", nodeName, region)
+	}
+}
+
+// TestCRDFallbackToConfigMap verifies that when the NexaPolicy resource is deleted
+// (but the CRD is still installed), the scheduler falls back to ConfigMap policy.
+func TestCRDFallbackToConfigMap(t *testing.T) {
+	// Ensure no NexaPolicy resource exists (CRD was installed by TestCRDPolicyScheduling).
+	deleteNexaPolicy(t)
+
+	// Wait for informer to notice deletion.
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+	pod := makePod("crd-fallback-test", map[string]string{
+		"nexa.io/region": "us-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// Should still schedule via ConfigMap fallback.
+	nodeName := waitForPodScheduled(t, testClient, ns, "crd-fallback-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	if region := node.Labels["nexa.io/region"]; region != "us-west1" {
+		t.Errorf("pod scheduled on node %s with region=%q, want us-west1 (ConfigMap fallback)", nodeName, region)
+	}
+}
+
+// TestCRDPolicyOverridesConfigMap verifies that CRD policy takes precedence over ConfigMap.
+// The ConfigMap has region policy enabled, but the CRD disables it — so a pod requesting
+// eu-west1 should schedule on any node (including us-west1 workers).
+func TestCRDPolicyOverridesConfigMap(t *testing.T) {
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: false
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+    strictOrgIsolation: false
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+
+	// Wait for informer to pick up the CRD.
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+	// Pod requests eu-west1, but CRD disables region filtering.
+	pod := makePod("crd-override-test", map[string]string{
+		"nexa.io/region": "eu-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// With region policy disabled via CRD, pod should schedule on any node.
+	nodeName := waitForPodScheduled(t, testClient, ns, "crd-override-test", 60*time.Second)
+	t.Logf("pod scheduled on %s with CRD region policy disabled (any node is acceptable)", nodeName)
+}

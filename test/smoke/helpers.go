@@ -266,6 +266,33 @@ func waitForPodPending(t *testing.T, client kubernetes.Interface, ns, name strin
 	}
 }
 
+// applyCRD installs the NexaPolicy CRD into the cluster.
+func applyCRD(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	crdPath := filepath.Join(root, "deploy", "manifests", "nexapolicy-crd.yaml")
+	runCmd(t, "kubectl", "apply", "-f", crdPath)
+}
+
+// applyNexaPolicy creates a NexaPolicy resource from inline YAML via kubectl.
+func applyNexaPolicy(t *testing.T, yamlContent string) {
+	t.Helper()
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yamlContent)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("apply NexaPolicy failed: %v\noutput: %s", err, out.String())
+	}
+}
+
+// deleteNexaPolicy removes the default NexaPolicy resource if it exists.
+func deleteNexaPolicy(t *testing.T) {
+	t.Helper()
+	_, _ = runCmdNoFail("kubectl", "delete", "nexapolicy", "default", "-n", namespace, "--ignore-not-found")
+}
+
 // schedulerLogs returns the logs from the Nexa scheduler pod.
 func schedulerLogs(t *testing.T, client kubernetes.Interface) string {
 	t.Helper()

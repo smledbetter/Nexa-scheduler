@@ -3,6 +3,7 @@ package nodestate
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/cache"
 )
 
 func makeTestNode(name string, labels map[string]string) *v1.Node {
@@ -229,4 +231,287 @@ func TestReconcileNode(t *testing.T) {
 // patchGetter is the interface for accessing patch data from a fake client action.
 type patchGetter interface {
 	GetPatch() []byte
+}
+
+func TestProcessNextWorkItem(t *testing.T) {
+	now := time.Now()
+
+	t.Run("successful reconcile — item forgotten", func(t *testing.T) {
+		node := makeTestNode("node1", map[string]string{})
+		pod := makeTestPod("pod1", "node1", "acme", v1.PodSucceeded, now)
+
+		client := fake.NewSimpleClientset(node, pod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		controller.queue.Add("node1")
+		result := controller.processNextWorkItem(context.Background())
+		close(stopCh)
+
+		if !result {
+			t.Fatal("expected processNextWorkItem to return true")
+		}
+		if controller.queue.Len() != 0 {
+			t.Errorf("expected empty queue after successful reconcile, got %d items", controller.queue.Len())
+		}
+	})
+
+	t.Run("failed reconcile — item requeued", func(t *testing.T) {
+		// No node "missing-node" in the fake client → reconcileNode will fail.
+		client := fake.NewSimpleClientset()
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		controller.queue.Add("missing-node")
+		result := controller.processNextWorkItem(context.Background())
+		close(stopCh)
+
+		if !result {
+			t.Fatal("expected processNextWorkItem to return true (requeue, not shutdown)")
+		}
+		// AddRateLimited may have a delay, so check NumRequeues instead of Len().
+		if controller.queue.NumRequeues("missing-node") == 0 {
+			t.Error("expected item to have requeues after failed reconcile")
+		}
+	})
+
+	t.Run("max retries exceeded — item dropped", func(t *testing.T) {
+		client := fake.NewSimpleClientset()
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		// Simulate 5 prior failures by calling AddRateLimited repeatedly.
+		for i := 0; i < 5; i++ {
+			controller.queue.AddRateLimited("missing-node")
+			// Drain and mark done so requeue count increments.
+			item, _ := controller.queue.Get()
+			controller.queue.Done(item)
+		}
+
+		// Now add and process — should hit max retries and drop.
+		controller.queue.Add("missing-node")
+		controller.processNextWorkItem(context.Background())
+		close(stopCh)
+
+		// After dropping, NumRequeues should be reset (Forget was called).
+		if controller.queue.NumRequeues("missing-node") != 0 {
+			t.Errorf("expected NumRequeues=0 after drop, got %d", controller.queue.NumRequeues("missing-node"))
+		}
+	})
+
+	t.Run("shutdown — returns false", func(t *testing.T) {
+		client := fake.NewSimpleClientset()
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		controller.queue.ShutDown()
+		result := controller.processNextWorkItem(context.Background())
+
+		if result {
+			t.Fatal("expected processNextWorkItem to return false on shutdown")
+		}
+	})
+}
+
+// drainQueue returns all items currently in the queue (non-blocking).
+func drainQueue(c *Controller) []string {
+	var items []string
+	for c.queue.Len() > 0 {
+		item, shutdown := c.queue.Get()
+		if shutdown {
+			break
+		}
+		items = append(items, item)
+		c.queue.Done(item)
+	}
+	return items
+}
+
+func TestEventHandlers(t *testing.T) {
+	t.Run("pod transitions to Succeeded — enqueues node", func(t *testing.T) {
+		runningPod := makeTestPod("pod1", "node1", "acme", v1.PodRunning, time.Time{})
+		client := fake.NewSimpleClientset(runningPod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		// Update the pod to Succeeded via the fake client.
+		succeededPod := runningPod.DeepCopy()
+		succeededPod.Status.Phase = v1.PodSucceeded
+		_, err := client.CoreV1().Pods("default").UpdateStatus(context.Background(), succeededPod, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("update pod status: %v", err)
+		}
+
+		// Wait for the event to propagate through the informer.
+		time.Sleep(500 * time.Millisecond)
+		close(stopCh)
+
+		items := drainQueue(controller)
+		if len(items) == 0 {
+			t.Fatal("expected node1 to be enqueued after pod transition to Succeeded")
+		}
+		if items[0] != "node1" {
+			t.Errorf("expected enqueued node name 'node1', got %q", items[0])
+		}
+	})
+
+	t.Run("pod transitions to Failed — enqueues node", func(t *testing.T) {
+		runningPod := makeTestPod("pod1", "node1", "acme", v1.PodRunning, time.Time{})
+		client := fake.NewSimpleClientset(runningPod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		failedPod := runningPod.DeepCopy()
+		failedPod.Status.Phase = v1.PodFailed
+		_, err := client.CoreV1().Pods("default").UpdateStatus(context.Background(), failedPod, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("update pod status: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+		close(stopCh)
+
+		items := drainQueue(controller)
+		if len(items) == 0 {
+			t.Fatal("expected node1 to be enqueued after pod transition to Failed")
+		}
+	})
+
+	t.Run("pod deleted — enqueues node", func(t *testing.T) {
+		pod := makeTestPod("pod1", "node1", "acme", v1.PodSucceeded, time.Now())
+		client := fake.NewSimpleClientset(pod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		err := client.CoreV1().Pods("default").Delete(context.Background(), "pod1", metav1.DeleteOptions{})
+		if err != nil {
+			t.Fatalf("delete pod: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+		close(stopCh)
+
+		items := drainQueue(controller)
+		if len(items) == 0 {
+			t.Fatal("expected node1 to be enqueued after pod deletion")
+		}
+	})
+
+	t.Run("running pod label update — no enqueue", func(t *testing.T) {
+		runningPod := makeTestPod("pod1", "node1", "acme", v1.PodRunning, time.Time{})
+		client := fake.NewSimpleClientset(runningPod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		// Update labels only (no phase change) — should NOT trigger enqueue.
+		updatedPod := runningPod.DeepCopy()
+		updatedPod.Labels["extra"] = "label"
+		_, err := client.CoreV1().Pods("default").Update(context.Background(), updatedPod, metav1.UpdateOptions{})
+		if err != nil {
+			t.Fatalf("update pod: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+		close(stopCh)
+
+		items := drainQueue(controller)
+		if len(items) != 0 {
+			t.Errorf("expected no enqueue for label-only update, got %v", items)
+		}
+	})
+
+	t.Run("pod with empty nodeName deleted — no enqueue", func(t *testing.T) {
+		pod := makeTestPod("pod1", "", "acme", v1.PodSucceeded, time.Now())
+		client := fake.NewSimpleClientset(pod)
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		stopCh := make(chan struct{})
+		factory.Start(stopCh)
+		factory.WaitForCacheSync(stopCh)
+
+		err := client.CoreV1().Pods("default").Delete(context.Background(), "pod1", metav1.DeleteOptions{})
+		if err != nil {
+			t.Fatalf("delete pod: %v", err)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+		close(stopCh)
+
+		items := drainQueue(controller)
+		if len(items) != 0 {
+			t.Errorf("expected no enqueue for pod with empty nodeName, got %v", items)
+		}
+	})
+}
+
+func TestControllerRun(t *testing.T) {
+	t.Run("starts and stops cleanly", func(t *testing.T) {
+		client := fake.NewSimpleClientset()
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		factory.Start(ctx.Done())
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- controller.Run(ctx, 1)
+		}()
+
+		err := <-errCh
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
+	})
+
+	t.Run("returns error on cache sync failure", func(t *testing.T) {
+		client := fake.NewSimpleClientset()
+		factory := informers.NewSharedInformerFactory(client, 0)
+		controller := NewController(client, factory)
+
+		// Override hasSynced with a func that never returns true.
+		controller.hasSynced = []cache.InformerSynced{func() bool { return false }}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+
+		err := controller.Run(ctx, 1)
+		if err == nil {
+			t.Fatal("expected error from Run when caches fail to sync")
+		}
+		if !strings.Contains(err.Error(), "failed to sync") {
+			t.Errorf("expected error containing 'failed to sync', got %q", err.Error())
+		}
+	})
 }

@@ -2,13 +2,13 @@
 
 ## Current State
 
-- **Tests:** 66 top-level (+ 7 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~80% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 64.3% policy, 48.9% nodestate, 100% testing)
-- **LOC:** ~6755 (application + deployment, excluding go.sum/config)
+- **Tests:** 70 top-level (+ 10 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing)
+- **LOC:** ~7300 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
 - **Docs:** Quickstart, architecture, threat model, integration guide (docs/)
-- **Milestone status:** Sprint 10 (Phase 10) complete. Sprint 11 next.
+- **Milestone status:** Sprint 11 (Phase 10a) complete. Sprint 12 next.
 - **Gates:** All 9 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet, + CRD helm lint, node controller helm lint)
 
 ---
@@ -188,7 +188,20 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 11: GPU & Confidential Compute Scheduling — [Sprint 11] (optional)
+### Phase 10a: Hardening — [Sprint 11] ✅
+
+**Goal:** Recover test coverage dropped by Sprint 10 and add CRD smoke tests for real-cluster validation.
+
+**Deliverables:**
+- Provider factory unit tests (`pkg/policy/provider_factory_test.go`): mock ProviderHandle, singleton behavior, broken KubeConfig fallback
+- Node state controller coverage recovery (`pkg/nodestate/controller_test.go`): processNextWorkItem (4 cases), event handlers (5 cases), Run() lifecycle (2 cases)
+- CRD smoke tests (3 scenarios): CRD policy scheduling, ConfigMap fallback, CRD overrides ConfigMap
+
+**Estimated LOC:** 400–600 (actual: ~530)
+
+---
+
+### Phase 11: GPU & Confidential Compute Scheduling — [Sprint 12] (optional)
 
 **Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
 
