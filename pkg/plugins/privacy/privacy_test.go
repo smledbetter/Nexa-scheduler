@@ -2,6 +2,7 @@ package privacy
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/nexascheduler/nexa/pkg/policy"
 	nt "github.com/nexascheduler/nexa/pkg/testing"
 )
 
@@ -16,23 +18,15 @@ import (
 var _ framework.FilterPlugin = (*Plugin)(nil)
 var _ framework.ScorePlugin = (*Plugin)(nil)
 
+// enabledPolicy returns a StaticProvider with privacy enabled and no defaults.
+func enabledPolicy() policy.Provider {
+	return &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: true}}}
+}
+
 func TestName(t *testing.T) {
 	p := &Plugin{}
 	if got := p.Name(); got != Name {
 		t.Errorf("Name() = %q, want %q", got, Name)
-	}
-}
-
-func TestNew(t *testing.T) {
-	plugin, err := New(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	if plugin == nil {
-		t.Fatal("New() returned nil plugin")
-	}
-	if plugin.Name() != Name {
-		t.Errorf("New() plugin name = %q, want %q", plugin.Name(), Name)
 	}
 }
 
@@ -152,7 +146,7 @@ func TestFilter(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{}
+	p := &Plugin{policy: enabledPolicy()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -175,6 +169,127 @@ func TestFilter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterDisabledPlugin(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}}}
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
+	node := nt.MakeNode("test-node", map[string]string{})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if status != nil && !status.IsSuccess() {
+		t.Errorf("disabled plugin should accept all nodes, got: %v", status.Message())
+	}
+}
+
+func TestFilterDefaultPrivacy(t *testing.T) {
+	provider := &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{
+		Enabled:        true,
+		DefaultPrivacy: "high",
+	}}}
+	p := &Plugin{policy: provider}
+
+	t.Run("unlabeled pod uses default privacy — rejects unwiped node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", nil)
+		node := nt.MakeNode("test-node", map[string]string{})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status == nil || status.IsSuccess() {
+			t.Error("Filter() should reject unwiped node when default privacy is high")
+		}
+	})
+
+	t.Run("unlabeled pod uses default privacy — accepts wiped node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", nil)
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/wiped": "true"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("Filter() should accept wiped node with default high privacy, got: %v", status.Message())
+		}
+	})
+
+	t.Run("explicit pod label overrides default", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard"})
+		node := nt.MakeNode("test-node", map[string]string{})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("explicit standard label should override default high, got: %v", status.Message())
+		}
+	})
+}
+
+func TestFilterStrictOrgIsolation(t *testing.T) {
+	provider := &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{
+		Enabled:            true,
+		StrictOrgIsolation: true,
+	}}}
+	p := &Plugin{policy: provider}
+
+	t.Run("standard pod with org — rejects cross-org node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard", "nexa.io/org": "acme"})
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/last-workload-org": "evil-corp"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status == nil || status.IsSuccess() {
+			t.Error("strict org isolation should reject cross-org node for standard pod")
+		}
+		if status != nil && !strings.Contains(status.Message(), "strict org isolation") {
+			t.Errorf("reason should mention strict org isolation, got: %q", status.Message())
+		}
+	})
+
+	t.Run("standard pod with org — accepts same-org node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard", "nexa.io/org": "acme"})
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/last-workload-org": "acme"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("strict org isolation should accept same-org node, got: %v", status.Message())
+		}
+	})
+
+	t.Run("standard pod with org — rejects node with cross-org running pod", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard", "nexa.io/org": "acme"})
+		node := nt.MakeNode("test-node", map[string]string{})
+		existingPod := nt.MakePod("evil-pod", map[string]string{"nexa.io/org": "evil-corp"})
+		nodeInfo := nt.MakeNodeInfo(node, existingPod)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status == nil || status.IsSuccess() {
+			t.Error("strict org isolation should reject node with cross-org running pod")
+		}
+	})
+
+	t.Run("pod without org label — not affected by strict isolation", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard"})
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/last-workload-org": "evil-corp"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("pod without org label should not be affected by strict isolation, got: %v", status.Message())
+		}
+	})
+}
+
+func TestFilterPolicyError(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{Err: errors.New("config unavailable")}}
+	pod := nt.MakePod("test-pod", nil)
+	node := nt.MakeNode("test-node", nil)
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if status == nil || status.Code() != fwk.Error {
+		t.Error("policy error should produce Error status (fail closed)")
 	}
 }
 
@@ -229,7 +344,7 @@ func TestScore(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{}
+	p := &Plugin{policy: enabledPolicy()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -244,5 +359,20 @@ func TestScore(t *testing.T) {
 				t.Errorf("Score() = %d, want %d", score, tt.wantScore)
 			}
 		})
+	}
+}
+
+func TestScoreDisabledPlugin(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}}}
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
+	node := nt.MakeNode("test-node", map[string]string{"nexa.io/wiped": "true"})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	score, status := p.Score(context.Background(), nil, pod, nodeInfo)
+	if status != nil && !status.IsSuccess() {
+		t.Errorf("disabled plugin score status = %v, want success", status.Message())
+	}
+	if score != 0 {
+		t.Errorf("disabled plugin Score() = %d, want 0", score)
 	}
 }

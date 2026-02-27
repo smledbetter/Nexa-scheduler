@@ -2,12 +2,14 @@ package region
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/nexascheduler/nexa/pkg/policy"
 	nt "github.com/nexascheduler/nexa/pkg/testing"
 )
 
@@ -15,23 +17,15 @@ import (
 var _ framework.FilterPlugin = (*Plugin)(nil)
 var _ framework.ScorePlugin = (*Plugin)(nil)
 
+// enabledPolicy returns a StaticProvider with region enabled and no defaults.
+func enabledPolicy() policy.Provider {
+	return &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: true}}}
+}
+
 func TestName(t *testing.T) {
 	p := &Plugin{}
 	if got := p.Name(); got != Name {
 		t.Errorf("Name() = %q, want %q", got, Name)
-	}
-}
-
-func TestNew(t *testing.T) {
-	plugin, err := New(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	if plugin == nil {
-		t.Fatal("New() returned nil plugin")
-	}
-	if plugin.Name() != Name {
-		t.Errorf("New() plugin name = %q, want %q", plugin.Name(), Name)
 	}
 }
 
@@ -48,7 +42,7 @@ func TestFilter(t *testing.T) {
 		podLabels  map[string]string
 		nodeLabels map[string]string
 		wantPass   bool
-		wantReason string // substring to match in rejection reason
+		wantReason string
 	}{
 		{
 			name:       "no pod labels — accept all nodes",
@@ -124,7 +118,7 @@ func TestFilter(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{}
+	p := &Plugin{policy: enabledPolicy()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -147,6 +141,71 @@ func TestFilter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFilterDisabledPlugin(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}}}
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/region": "us-west1"})
+	node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "eu-west1"})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if status != nil && !status.IsSuccess() {
+		t.Errorf("disabled plugin should accept all nodes, got: %v", status.Message())
+	}
+}
+
+func TestFilterDefaultRegion(t *testing.T) {
+	provider := &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{
+		Enabled:       true,
+		DefaultRegion: "us-west1",
+	}}}
+	p := &Plugin{policy: provider}
+
+	t.Run("unlabeled pod uses default region — rejects mismatched node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", nil)
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "eu-west1"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status == nil || status.IsSuccess() {
+			t.Error("Filter() should reject node with mismatched default region")
+		}
+	})
+
+	t.Run("unlabeled pod uses default region — accepts matched node", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", nil)
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "us-west1"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("Filter() should accept matching default region, got: %v", status.Message())
+		}
+	})
+
+	t.Run("explicit pod label overrides default", func(t *testing.T) {
+		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/region": "eu-west1"})
+		node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "eu-west1"})
+		nodeInfo := nt.MakeNodeInfo(node)
+
+		status := p.Filter(context.Background(), nil, pod, nodeInfo)
+		if status != nil && !status.IsSuccess() {
+			t.Errorf("explicit label should override default, got: %v", status.Message())
+		}
+	})
+}
+
+func TestFilterPolicyError(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{Err: errors.New("config unavailable")}}
+	pod := nt.MakePod("test-pod", nil)
+	node := nt.MakeNode("test-node", nil)
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if status == nil || status.Code() != fwk.Error {
+		t.Error("policy error should produce Error status (fail closed)")
 	}
 }
 
@@ -201,7 +260,7 @@ func TestScore(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{}
+	p := &Plugin{policy: enabledPolicy()}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -216,5 +275,20 @@ func TestScore(t *testing.T) {
 				t.Errorf("Score() = %d, want %d", score, tt.wantScore)
 			}
 		})
+	}
+}
+
+func TestScoreDisabledPlugin(t *testing.T) {
+	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}}}
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/region": "us-west1"})
+	node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "us-west1"})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	score, status := p.Score(context.Background(), nil, pod, nodeInfo)
+	if status != nil && !status.IsSuccess() {
+		t.Errorf("disabled plugin score status = %v, want success", status.Message())
+	}
+	if score != 0 {
+		t.Errorf("disabled plugin Score() = %d, want 0", score)
 	}
 }

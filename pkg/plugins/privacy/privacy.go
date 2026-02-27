@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+
+	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
 const (
@@ -30,6 +32,7 @@ const (
 // Plugin implements privacy-aware filtering and scoring based on node cleanliness.
 type Plugin struct {
 	handle framework.Handle
+	policy policy.Provider
 }
 
 var _ framework.FilterPlugin = (*Plugin)(nil)
@@ -47,7 +50,43 @@ func (p *Plugin) Name() string {
 //
 // Standard-privacy and unlabeled pods pass all nodes.
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
-	if podLabel(pod, labelPrivacy) != privacyHigh {
+	pol, err := p.policy.GetPolicy()
+	if err != nil {
+		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
+	}
+
+	if !pol.Privacy.Enabled {
+		return nil
+	}
+
+	privacyLevel := podLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
+
+	// Strict org isolation applies org checks to ALL pods, not just high-privacy.
+	if pol.Privacy.StrictOrgIsolation {
+		podOrg := podLabel(pod, labelOrg)
+		if podOrg != "" {
+			node := nodeInfo.Node()
+			lastOrg := node.Labels[labelLastWorkload]
+			if lastOrg != "" && lastOrg != podOrg {
+				return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+					"node %s last workload org %q does not match pod org %q; strict org isolation is enabled",
+					node.Name, lastOrg, podOrg,
+				))
+			}
+			for _, pi := range nodeInfo.GetPods() {
+				existingPod := pi.GetPod()
+				existingOrg := podLabel(existingPod, labelOrg)
+				if existingOrg != "" && existingOrg != podOrg {
+					return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+						"node %s has pod %s from org %q; strict org isolation rejects pod from org %q",
+						node.Name, existingPod.Name, existingOrg, podOrg,
+					))
+				}
+			}
+		}
+	}
+
+	if privacyLevel != privacyHigh {
 		return nil
 	}
 
@@ -96,7 +135,17 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 //	Not wiped, same org:                framework.MaxNodeScore / 2 (50)
 //	No privacy label on pod:            0
 func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
-	if podLabel(pod, labelPrivacy) != privacyHigh {
+	pol, err := p.policy.GetPolicy()
+	if err != nil {
+		return 0, fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
+	}
+
+	if !pol.Privacy.Enabled {
+		return 0, nil
+	}
+
+	privacyLevel := podLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
+	if privacyLevel != privacyHigh {
 		return 0, nil
 	}
 
@@ -122,9 +171,20 @@ func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-// New creates a new Privacy plugin.
+// NewWithProvider creates a Privacy plugin with the given policy provider.
+// Used in tests and integration tests to inject a StaticProvider.
+func NewWithProvider(provider policy.Provider) *Plugin {
+	return &Plugin{policy: provider}
+}
+
+// New creates a new Privacy plugin with a ConfigMap-backed policy provider.
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	return &Plugin{handle: h}, nil
+	provider := policy.NewConfigMapProvider(
+		h.SharedInformerFactory(),
+		policy.DefaultNamespace,
+		policy.DefaultConfigMapName,
+	)
+	return &Plugin{handle: h, policy: provider}, nil
 }
 
 // podLabel returns the value of a label on a pod, or "" if absent.
@@ -133,4 +193,14 @@ func podLabel(pod *v1.Pod, key string) string {
 		return ""
 	}
 	return pod.Labels[key]
+}
+
+// podLabelWithDefault returns the pod's label value, or the default if absent/empty.
+func podLabelWithDefault(pod *v1.Pod, key, defaultVal string) string {
+	if pod.Labels != nil {
+		if v := pod.Labels[key]; v != "" {
+			return v
+		}
+	}
+	return defaultVal
 }

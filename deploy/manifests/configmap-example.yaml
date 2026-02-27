@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nexa-scheduler-config
+  namespace: nexa-system
+data:
+  policy.json: |
+    {
+      "regionPolicy": {
+        "enabled": true,
+        "defaultRegion": "",
+        "defaultZone": ""
+      },
+      "privacyPolicy": {
+        "enabled": true,
+        "defaultPrivacy": "standard",
+        "strictOrgIsolation": false
+      }
+    }
