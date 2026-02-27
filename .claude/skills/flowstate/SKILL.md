@@ -120,7 +120,7 @@ Read these files first:
 
 When all gates pass, say: "Ready for Phase 3: SHIP whenever you want to proceed."
 
-When the user says to proceed, ask them to run `/clear` before starting SHIP. The implementation context is no longer needed and will waste context window on metrics/retro work.
+When the user says to proceed, delegate SHIP to a subagent. Use `Task` with `subagent_type: "general-purpose"` and pass a prompt containing: the sprint number, the project path, and an instruction to follow all Phase 3 SHIP steps from `.claude/skills/flowstate/SKILL.md`. The subagent starts with fresh context (no implementation baggage), reads only what it needs, and handles all SHIP steps autonomously. This replaces the manual `/clear` step.
 
 ## Phase 3: SHIP
 
