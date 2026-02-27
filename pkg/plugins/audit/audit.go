@@ -133,14 +133,13 @@ func NewWithLogger(handle framework.Handle, provider policy.Provider, logger *Lo
 	return &Plugin{handle: handle, policy: provider, logger: logger}
 }
 
-// New creates a new Audit plugin with a ConfigMap-backed policy provider
+// New creates a new Audit plugin with a composite policy provider (CRD + ConfigMap fallback)
 // and a Logger writing JSON lines to stderr.
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	provider := policy.NewConfigMapProvider(
-		h.SharedInformerFactory(),
-		policy.DefaultNamespace,
-		policy.DefaultConfigMapName,
-	)
+	provider, err := policy.NewCompositeProviderFromHandle(h)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create policy provider: %w", err)
+	}
 	logger := NewLogger(os.Stderr, false)
 	return &Plugin{handle: h, policy: provider, logger: logger}, nil
 }

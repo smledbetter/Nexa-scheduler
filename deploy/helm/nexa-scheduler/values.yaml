@@ -73,6 +73,11 @@ scheduler:
   # -- Leader election. Enable when running multiple replicas.
   leaderElect: false
 
+# CRD installation
+crd:
+  # -- Install the NexaPolicy CRD. Disable if managing CRDs separately.
+  install: true
+
 # Policy configuration (mounted as ConfigMap)
 policy:
   # -- Region policy settings.

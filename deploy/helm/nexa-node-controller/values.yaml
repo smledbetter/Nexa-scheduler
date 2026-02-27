@@ -1,0 +1,75 @@
+# Nexa Node State Controller Helm Values
+
+# -- Number of controller replicas. Leader election recommended when > 1.
+replicaCount: 1
+
+image:
+  # -- Container image repository.
+  repository: nexascheduler/nexa-node-controller
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart appVersion.
+  tag: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the release name.
+nameOverride: ""
+# -- Override the full release name.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount for the controller.
+  create: true
+  # -- Annotations to add to the ServiceAccount.
+  annotations: {}
+  # -- Name override. Defaults to the fullname template.
+  name: ""
+
+rbac:
+  # -- Create ClusterRole and ClusterRoleBinding.
+  create: true
+
+# -- Pod annotations.
+podAnnotations: {}
+
+# -- Pod security context.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Container resource requests and limits.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# -- Node selector for controller pod placement.
+nodeSelector: {}
+
+# -- Tolerations for controller pod placement.
+tolerations: []
+
+# -- Affinity rules for controller pod placement.
+affinity: {}
+
+# Controller settings
+controller:
+  # -- Number of reconciliation workers.
+  workers: 2
+  # -- Informer resync period.
+  resyncPeriod: 5m

@@ -41,6 +41,10 @@ rules:
   - apiGroups: ["resource.k8s.io"]
     resources: ["resourceslices", "resourceclaims", "deviceclasses"]
     verbs: ["get", "list", "watch"]
+  # --- NexaPolicy CRD ---
+  - apiGroups: ["nexa.io"]
+    resources: ["nexapolicies"]
+    verbs: ["get", "list", "watch"]
   # --- Leader election ---
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
