@@ -4,10 +4,11 @@
 
 - **Tests:** 52 (134 subtests)
 - **Coverage:** ~90% overall (100% metrics, 90.0% audit, 91.3% privacy, 88.1% region, 72.2% policy, 100% testing)
-- **LOC:** ~3200 (application code, excluding go.sum/config)
+- **LOC:** ~3850 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
-- **Milestone status:** Sprint 5 (Phase 5) complete. Sprint 6 next.
-- **Gates:** All 4 passing (build, lint, test, coverage)
+- **Helm installed:** Yes — via Homebrew
+- **Milestone status:** Sprint 6 (Phase 6) complete. Sprint 7 next.
+- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template
 
 ---
 
@@ -109,7 +110,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 6: Helm Chart & Deployment — [Sprint 6]
+### Phase 6: Helm Chart & Deployment — [Sprint 6] ✅
 
 **Goal:** One-command installation via Helm with sensible defaults.
 
