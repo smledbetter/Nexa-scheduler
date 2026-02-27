@@ -2,11 +2,11 @@
 
 ## Current State
 
-- **Tests:** 22 (39 subtests)
-- **Coverage:** 100% (plugin + testing packages)
-- **LOC:** ~980 (application code, excluding go.sum/config)
+- **Tests:** 30 (65 subtests)
+- **Coverage:** 90.1% overall (93.8% privacy, 90.9% region, 72.2% policy, 100% testing)
+- **LOC:** ~1890 (application code, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
-- **Milestone status:** Sprint 2 (Phase 2) complete. Sprint 3 next.
+- **Milestone status:** Sprint 3 (Phase 3) complete. Sprint 4 next.
 - **Gates:** All 4 passing (build, lint, test, coverage)
 
 ---
@@ -63,7 +63,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 3: Policy Configuration via ConfigMap — [Sprint 3]
+### Phase 3: Policy Configuration via ConfigMap — [Sprint 3] ✅
 
 **Goal:** Scheduling policies are defined in a ConfigMap (`nexa-scheduler-config`) and dynamically loaded. Policies specify which labels trigger which filters and what the default behavior is.
 
@@ -76,7 +76,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Example ConfigMap manifests
 - Integration test: Region + Privacy plugins compose correctly on shared pod/node pairs
 
-**Estimated LOC:** 600–900
+**Estimated LOC:** 600–900 (actual: 910)
 
 ---
 
@@ -134,6 +134,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Threat model (attack surfaces, mitigations)
 - Integration guide (existing schedulers, monitoring, CI/CD)
 - Edge case hardening: scheduler crash recovery, ConfigMap deletion handling, node label race conditions
+- Fake clientset tests for ConfigMapProvider (covering New() and Get() paths that require a running API server)
 - End-to-end test suite (Kind-based)
 
 **Estimated LOC:** 500–1000
