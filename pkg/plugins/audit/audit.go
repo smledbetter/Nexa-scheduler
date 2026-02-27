@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/nexascheduler/nexa/pkg/metrics"
 	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
@@ -31,17 +33,38 @@ type Plugin struct {
 	logger *Logger
 }
 
+var _ framework.PreFilterPlugin = (*Plugin)(nil)
 var _ framework.PostBindPlugin = (*Plugin)(nil)
 var _ framework.PostFilterPlugin = (*Plugin)(nil)
+
+// startTimeData stores the scheduling cycle start time in CycleState.
+type startTimeData struct{ t time.Time }
+
+func (d *startTimeData) Clone() fwk.StateData { return d }
+
+const startTimeKey fwk.StateKey = "NexaAudit/startTime"
 
 // Name returns the name of the plugin.
 func (p *Plugin) Name() string {
 	return Name
 }
 
-// PostBind logs a successful pod placement as structured JSON.
+// PreFilter records the scheduling cycle start time in CycleState.
+// It does not filter any nodes — it is a pass-through for timing only.
+func (p *Plugin) PreFilter(_ context.Context, state fwk.CycleState, _ *v1.Pod, _ []fwk.NodeInfo) (*framework.PreFilterResult, *fwk.Status) {
+	state.Write(startTimeKey, &startTimeData{t: time.Now()})
+	return nil, nil
+}
+
+// PreFilterExtensions returns nil — no incremental updates needed.
+func (p *Plugin) PreFilterExtensions() framework.PreFilterExtensions {
+	return nil
+}
+
+// PostBind logs a successful pod placement as structured JSON and records scheduling duration.
 // Only scheduling metadata is logged — no env vars, secrets, or service account tokens.
-func (p *Plugin) PostBind(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeName string) {
+func (p *Plugin) PostBind(_ context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) {
+	p.observeDuration(state, "scheduled")
 	pol := p.policySnapshot()
 	p.logger.LogDecision(DecisionEntry{
 		Event:  "scheduled",
@@ -54,7 +77,8 @@ func (p *Plugin) PostBind(_ context.Context, _ fwk.CycleState, pod *v1.Pod, node
 // PostFilter logs a scheduling failure when all nodes are rejected.
 // INFO: summary with total filtered count. DEBUG: per-node rejection reasons.
 // Returns (nil, Unschedulable) — informational only, does not trigger preemption.
-func (p *Plugin) PostFilter(ctx context.Context, _ fwk.CycleState, pod *v1.Pod, filteredNodeStatusMap framework.NodeToStatusReader) (*framework.PostFilterResult, *fwk.Status) {
+func (p *Plugin) PostFilter(_ context.Context, state fwk.CycleState, pod *v1.Pod, filteredNodeStatusMap framework.NodeToStatusReader) (*framework.PostFilterResult, *fwk.Status) {
+	p.observeDuration(state, "failed")
 	pol := p.policySnapshot()
 
 	// Collect per-node filter reasons from the status map.
@@ -144,6 +168,21 @@ func podRef(pod *v1.Pod) PodRef {
 		Region:    podLabel(pod, labelRegion),
 		Zone:      podLabel(pod, labelZone),
 		Org:       podLabel(pod, labelOrg),
+	}
+}
+
+// observeDuration records the scheduling cycle duration if a start time was stored in CycleState.
+// Silently skips if metrics are not registered or CycleState is nil/missing the key.
+func (p *Plugin) observeDuration(state fwk.CycleState, result string) {
+	if metrics.SchedulingDuration == nil || state == nil {
+		return
+	}
+	data, err := state.Read(startTimeKey)
+	if err != nil {
+		return
+	}
+	if start, ok := data.(*startTimeData); ok {
+		metrics.SchedulingDuration.WithLabelValues(result).Observe(time.Since(start.t).Seconds())
 	}
 }
 

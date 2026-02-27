@@ -13,11 +13,16 @@ import (
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
+	"github.com/nexascheduler/nexa/pkg/metrics"
 	"github.com/nexascheduler/nexa/pkg/policy"
 	nt "github.com/nexascheduler/nexa/pkg/testing"
 )
 
 // Compile-time interface compliance checks.
+var _ framework.PreFilterPlugin = (*Plugin)(nil)
 var _ framework.PostBindPlugin = (*Plugin)(nil)
 var _ framework.PostFilterPlugin = (*Plugin)(nil)
 
@@ -457,6 +462,128 @@ func TestLogFilterDetailEmittedWhenDebugOn(t *testing.T) {
 	}
 	if entry.Level != "DEBUG" {
 		t.Errorf("Level = %q, want DEBUG", entry.Level)
+	}
+}
+
+// --- PreFilter and timing tests ---
+
+func TestPreFilter(t *testing.T) {
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	state := framework.NewCycleState()
+
+	result, status := p.PreFilter(context.Background(), state, nt.MakePod("test", nil), nil)
+	if result != nil {
+		t.Error("PreFilter should return nil result (no node filtering)")
+	}
+	if status != nil {
+		t.Errorf("PreFilter should return nil status, got %v", status)
+	}
+
+	// Verify start time was written to CycleState.
+	data, err := state.Read(startTimeKey)
+	if err != nil {
+		t.Fatalf("CycleState missing start time: %v", err)
+	}
+	if _, ok := data.(*startTimeData); !ok {
+		t.Errorf("CycleState data is %T, want *startTimeData", data)
+	}
+}
+
+func TestPreFilterExtensions(t *testing.T) {
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	if ext := p.PreFilterExtensions(); ext != nil {
+		t.Error("PreFilterExtensions should return nil")
+	}
+}
+
+func TestPostBindRecordsDuration(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	state := framework.NewCycleState()
+
+	// Simulate PreFilter writing start time.
+	state.Write(startTimeKey, &startTimeData{t: time.Now().Add(-10 * time.Millisecond)})
+
+	p.PostBind(context.Background(), state, nt.MakePod("timed-pod", nil), "node-1")
+
+	// Verify the histogram recorded an observation.
+	m := &dto.Metric{}
+	observer := metrics.SchedulingDuration.WithLabelValues("scheduled")
+	if h, ok := observer.(prometheus.Metric); ok {
+		if err := h.Write(m); err != nil {
+			t.Fatalf("failed to read histogram: %v", err)
+		}
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Errorf("expected 1 duration observation, got %d", m.GetHistogram().GetSampleCount())
+	}
+}
+
+func TestPostFilterRecordsDuration(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+
+	handle, _ := makeNodeInfoList(nt.MakeNode("node-f", nil))
+	p, _ := newTestPlugin(enabledPolicy(), handle, false)
+	state := framework.NewCycleState()
+	state.Write(startTimeKey, &startTimeData{t: time.Now().Add(-5 * time.Millisecond)})
+
+	statusMap := framework.NewNodeToStatus(
+		map[string]*fwk.Status{"node-f": fwk.NewStatus(fwk.Unschedulable, "rejected")},
+		fwk.NewStatus(fwk.UnschedulableAndUnresolvable),
+	)
+	p.PostFilter(context.Background(), state, nt.MakePod("fail-timed", nil), statusMap)
+
+	m := &dto.Metric{}
+	observer := metrics.SchedulingDuration.WithLabelValues("failed")
+	if h, ok := observer.(prometheus.Metric); ok {
+		if err := h.Write(m); err != nil {
+			t.Fatalf("failed to read histogram: %v", err)
+		}
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Errorf("expected 1 duration observation, got %d", m.GetHistogram().GetSampleCount())
+	}
+}
+
+func TestObserveDurationNilState(t *testing.T) {
+	// Should not panic when CycleState is nil.
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	p.observeDuration(nil, "scheduled")
+}
+
+func TestObserveDurationNoMetrics(t *testing.T) {
+	// Should not panic when metrics are not registered (nil collectors).
+	origDuration := metrics.SchedulingDuration
+	metrics.SchedulingDuration = nil
+	defer func() { metrics.SchedulingDuration = origDuration }()
+
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	state := framework.NewCycleState()
+	state.Write(startTimeKey, &startTimeData{t: time.Now()})
+	p.observeDuration(state, "scheduled")
+}
+
+func TestObserveDurationMissingKey(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+
+	// CycleState without start time — should silently skip.
+	p, _ := newTestPlugin(enabledPolicy(), nil, false)
+	state := framework.NewCycleState()
+	p.observeDuration(state, "scheduled")
+
+	m := &dto.Metric{}
+	observer := metrics.SchedulingDuration.WithLabelValues("scheduled")
+	if h, ok := observer.(prometheus.Metric); ok {
+		if err := h.Write(m); err != nil {
+			t.Fatalf("failed to read histogram: %v", err)
+		}
+	}
+	if m.GetHistogram().GetSampleCount() != 0 {
+		t.Errorf("expected 0 observations when key missing, got %d", m.GetHistogram().GetSampleCount())
 	}
 }
 

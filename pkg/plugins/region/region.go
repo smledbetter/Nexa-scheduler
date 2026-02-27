@@ -12,6 +12,7 @@ import (
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
+	"github.com/nexascheduler/nexa/pkg/metrics"
 	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
@@ -44,10 +45,14 @@ func (p *Plugin) Name() string {
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
 	pol, err := p.policy.GetPolicy()
 	if err != nil {
+		recordPolicyEval(Name, "error")
+		recordFilter(Name, "error")
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
 	}
+	recordPolicyEval(Name, "success")
 
 	if !pol.Region.Enabled {
+		recordFilter(Name, "accepted")
 		return nil
 	}
 
@@ -56,6 +61,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 
 	// No region/zone preference — accept all nodes.
 	if podRegion == "" && podZone == "" {
+		recordFilter(Name, "accepted")
 		return nil
 	}
 
@@ -64,6 +70,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	if podRegion != "" {
 		nodeRegion := node.Labels[labelRegion]
 		if nodeRegion != podRegion {
+			recordFilter(Name, "rejected")
 			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 				"node %s region %q does not match required region %q; add label %s=%s to the node",
 				node.Name, nodeRegion, podRegion, labelRegion, podRegion,
@@ -74,6 +81,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	if podZone != "" {
 		nodeZone := node.Labels[labelZone]
 		if nodeZone != podZone {
+			recordFilter(Name, "rejected")
 			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 				"node %s zone %q does not match required zone %q; add label %s=%s to the node",
 				node.Name, nodeZone, podZone, labelZone, podZone,
@@ -81,6 +89,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 		}
 	}
 
+	recordFilter(Name, "accepted")
 	return nil
 }
 
@@ -120,6 +129,7 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 		score = framework.MaxNodeScore
 	}
 
+	recordScore(Name, float64(score))
 	return score, nil
 }
 
@@ -142,6 +152,27 @@ func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plu
 		policy.DefaultConfigMapName,
 	)
 	return &Plugin{handle: h, policy: provider}, nil
+}
+
+// recordFilter increments the filter result counter if metrics are registered.
+func recordFilter(plugin, result string) {
+	if metrics.FilterResults != nil {
+		metrics.FilterResults.WithLabelValues(plugin, result).Inc()
+	}
+}
+
+// recordPolicyEval increments the policy evaluation counter if metrics are registered.
+func recordPolicyEval(plugin, result string) {
+	if metrics.PolicyEvaluations != nil {
+		metrics.PolicyEvaluations.WithLabelValues(plugin, result).Inc()
+	}
+}
+
+// recordScore observes a score value if metrics are registered.
+func recordScore(plugin string, score float64) {
+	if metrics.ScoreDistribution != nil {
+		metrics.ScoreDistribution.WithLabelValues(plugin).Observe(score)
+	}
 }
 
 // podLabelWithDefault returns the pod's label value, or the default if absent/empty.
