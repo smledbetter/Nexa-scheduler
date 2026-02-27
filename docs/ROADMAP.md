@@ -2,11 +2,12 @@
 
 ## Current State
 
-- **Tests:** 0
-- **Coverage:** N/A (no code yet)
-- **LOC:** 0 (application code)
-- **Go installed:** No — must install Go 1.23+ and golangci-lint before Sprint 1
-- **Milestone status:** Sprint 0 (planning) complete. Sprint 1 next.
+- **Tests:** 10
+- **Coverage:** 100% (plugin packages)
+- **LOC:** ~345 (application code, excluding go.sum/config)
+- **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
+- **Milestone status:** Sprint 1 (Phase 1) complete. Sprint 2 next.
+- **Gates:** All 4 passing (build, lint, test, coverage)
 
 ---
 
@@ -28,7 +29,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ## Phases
 
-### Phase 1: Project Scaffolding & Scheduler Plugin Shell — [Sprint 1]
+### Phase 1: Project Scaffolding & Scheduler Plugin Shell — [Sprint 1] ✅
 
 **Goal:** A running out-of-tree scheduler binary that registers with the Kubernetes Scheduling Framework, accepts pods with `schedulerName: nexa-scheduler`, and schedules them using no-op Filter/Score plugins.
 

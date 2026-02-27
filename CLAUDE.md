@@ -74,4 +74,5 @@ IMPORTANT: PATH must include `$HOME/go/bin` for golangci-lint. Run: `export PATH
 
 ## Known Issues & Gotchas
 
-<!-- Add mistakes and corrections here as they're discovered. Each entry should prevent Claude from repeating a specific error. -->
+- **k8s framework imports:** Plugin interfaces (`FilterPlugin`, `ScorePlugin`, `Handle`) are in `k8s.io/kubernetes/pkg/scheduler/framework`. Data types (`CycleState`, `NodeInfo`, `Status`) are in `k8s.io/kube-scheduler/framework`. Always import both. Follow the `sigs.k8s.io/scheduler-plugins` pattern for `go.mod` replace directives.
+- **k8s v1.34+ interface changes:** `CycleState` and `NodeInfo` are interfaces passed by value (not pointer). `Score` takes `NodeInfo`, not `string`. Check `go doc` for exact signatures after `go mod tidy`.
