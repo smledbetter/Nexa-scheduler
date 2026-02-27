@@ -2,13 +2,13 @@
 
 ## Current State
 
-- **Tests:** 55 (134 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`)
+- **Tests:** 55 top-level (144 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`, all passing)
 - **Coverage:** ~90% overall (100% metrics, 90.0% audit, 91.3% privacy, 88.1% region, 72.2% policy, 100% testing)
-- **LOC:** ~4550 (application + deployment, excluding go.sum/config)
+- **LOC:** ~5050 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Milestone status:** Sprint 7 (Phase 7) complete. Sprint 8 next.
-- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template + go vet smoke
+- **Milestone status:** Sprint 7 (Phase 7) complete (amended). Sprint 8 next.
+- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template + go vet smoke + make smoke (7/7)
 
 ---
 
@@ -131,12 +131,16 @@ These refine or override the PRD where the original recommendations were impreci
 
 **Deliverables:**
 - Bug fix: policy ConfigMap name must match `DefaultConfigMapName` ("nexa-scheduler-config")
-- Kind-based smoke test suite (7 scenarios: region filtering, privacy filtering, privacy rejection, org isolation, audit logs, metrics endpoint, policy hot reload)
+- Bug fix: RBAC ClusterRole expanded for all kube-scheduler framework informer requirements
+- Bug fix: metrics registered with `legacyregistry.Registerer()` instead of `prometheus.DefaultRegisterer`
+- Bug fix: `--authorization-always-allow-paths` added for Prometheus metrics scraping
+- Kind-based smoke test suite (7 scenarios, all passing: region filtering, privacy filtering, privacy rejection, org isolation, audit logs, metrics endpoint, policy hot reload)
 - Test helpers: cluster lifecycle (Kind CLI), pod/node factories, wait/assert utilities
+- Deploy contract tests: 5 unit tests (ConfigMap name, RBAC completeness, auth path)
 - Makefile `smoke` target with `//go:build smoke` tag isolation
 - 3-worker Kind cluster config with labeled nodes for constraint matrix testing
 
-**Estimated LOC:** 500–600
+**Estimated LOC:** 500–600 (actual: 816 — includes post-SHIP deployment bug fixes)
 
 ---
 
