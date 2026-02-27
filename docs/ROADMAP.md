@@ -2,16 +2,16 @@
 
 ## Current State
 
-- **Status:** Milestone 2 complete (compliance report CLI shipped). Starting Milestone 3.
-- **Tests:** 98 top-level (+ 16 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing, 93.2% webhook, 92.8% compliance)
-- **LOC:** ~10170 (application + deployment, excluding go.sum/config)
+- **Status:** Milestone 3 complete (confidential compute + node cooldown shipped). All 3 milestones done.
+- **Tests:** 111 top-level (+ 18 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 94.4% privacy, 89.1% region, 95.7% policy, 86.0% nodestate, 100% testing, 93.2% webhook, 92.8% compliance, 91.3% confidential)
+- **LOC:** ~11200 (application + deployment, excluding go.sum/config)
 - **Binaries:** 4 (scheduler, node controller, webhook, compliance CLI)
 - **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide with Kueue + immutable audit storage sections (docs/)
-- **Sprints completed:** 15 (Sprint 0–14), across 14 phases
+- **Docs:** Quickstart, architecture, threat model (label spoofing + TEE trust + GPU VRAM gap mitigated/documented), integration guide with Kueue + immutable audit storage sections (docs/)
+- **Sprints completed:** 16 (Sprint 0–15), across 15 phases
 - **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
@@ -281,11 +281,11 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Milestone 3: Hardware Trust — [Sprint 15]
+### Milestone 3: Hardware Trust — [Sprint 15] ✅
 
 **Goal:** Extend Nexa's privacy guarantees to hardware-level protections and temporal freshness. Platform engineers operating TEE-capable infrastructure can enforce confidential compute requirements at scheduling time. Temporal policy ensures wipe freshness.
 
-#### Phase 14: Confidential Compute Scheduling + Node Cooldown — [Sprint 15]
+#### Phase 14: Confidential Compute Scheduling + Node Cooldown — [Sprint 15] ✅
 
 **Goal:** New Filter/Score plugin for TEE-capable nodes. Extend wipe tracking from boolean to timestamp for temporal freshness policy.
 
@@ -317,7 +317,7 @@ These refine or override the PRD where the original recommendations were impreci
 - No mainstream GPU offers full VRAM encryption. Confidential GPU compute is a hardware industry gap, not a scheduling gap.
 - Confidential Containers (CoCo/Kata) add overhead. Policy should make confidential placement opt-in, not default.
 
-**Estimated LOC:** 500–750
+**Estimated LOC:** 500–750 (actual: 1033 — includes 13 unit tests, 2 smoke tests, and threat model addendum)
 
 ---
 
