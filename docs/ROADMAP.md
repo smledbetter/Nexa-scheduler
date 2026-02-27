@@ -2,13 +2,13 @@
 
 ## Current State
 
-- **Tests:** 52 (134 subtests)
+- **Tests:** 55 (134 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`)
 - **Coverage:** ~90% overall (100% metrics, 90.0% audit, 91.3% privacy, 88.1% region, 72.2% policy, 100% testing)
-- **LOC:** ~3850 (application + deployment, excluding go.sum/config)
+- **LOC:** ~4550 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Milestone status:** Sprint 6 (Phase 6) complete. Sprint 7 next.
-- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template
+- **Milestone status:** Sprint 7 (Phase 7) complete. Sprint 8 next.
+- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template + go vet smoke
 
 ---
 
@@ -125,7 +125,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 7: Smoke Tests — [Sprint 7]
+### Phase 7: Smoke Tests — [Sprint 7] ✅
 
 **Goal:** Prove the scheduler works end-to-end on a real cluster. Fix the policy ConfigMap name mismatch from Sprint 6.
 
