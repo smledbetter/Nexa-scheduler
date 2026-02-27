@@ -2,11 +2,11 @@
 
 ## Current State
 
-- **Tests:** 10
-- **Coverage:** 100% (plugin packages)
-- **LOC:** ~345 (application code, excluding go.sum/config)
+- **Tests:** 22 (39 subtests)
+- **Coverage:** 100% (plugin + testing packages)
+- **LOC:** ~980 (application code, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
-- **Milestone status:** Sprint 1 (Phase 1) complete. Sprint 2 next.
+- **Milestone status:** Sprint 2 (Phase 2) complete. Sprint 3 next.
 - **Gates:** All 4 passing (build, lint, test, coverage)
 
 ---
@@ -47,7 +47,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 2: Region & Privacy Filters — [Sprint 2]
+### Phase 2: Region & Privacy Filters — [Sprint 2] ✅
 
 **Goal:** Both core scheduling plugins get real logic. Pods with `nexa.io/region` or `nexa.io/zone` labels are only placed on matching nodes. Pods with `nexa.io/privacy=high` require clean nodes (`nexa.io/wiped=true`) and org-based anti-affinity.
 
@@ -59,7 +59,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Privacy Score plugin: prefer cleaner nodes (wiped > idle > busy-same-org)
 - Unit tests: 20+ cases across both plugins (exact match, region-only, zone-only, no labels, conflicting labels, missing node labels, node dirty/clean states, org matching, privacy levels high/standard/none, malformed labels)
 
-**Estimated LOC:** 1000–1500
+**Estimated LOC:** 1000–1500 (actual: 635 — pure plugin logic is more concise than estimated)
 
 ---
 
@@ -74,6 +74,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Validation: reject malformed policies with clear error messages
 - Unit tests for policy parsing, validation, and application
 - Example ConfigMap manifests
+- Integration test: Region + Privacy plugins compose correctly on shared pod/node pairs
 
 **Estimated LOC:** 600–900
 
