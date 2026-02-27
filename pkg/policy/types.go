@@ -63,4 +63,16 @@ type ConfidentialPolicy struct {
 
 	// RequireRuntimeClass when set requires confidential pods to use this runtimeClassName.
 	RequireRuntimeClass string `json:"requireRuntimeClass,omitempty"`
+
+	// RequireAttestation when true requires TEE nodes to have passed remote attestation
+	// verification (nexa.io/tee-attested=true) before accepting confidential workloads.
+	RequireAttestation bool `json:"requireAttestation"`
+
+	// AttestationMaxAgeHours specifies how recently a node must have been attested.
+	// 0 means disabled (any attestation is fresh enough). Requires nexa.io/tee-attestation-time label.
+	AttestationMaxAgeHours int `json:"attestationMaxAgeHours,omitempty"`
+
+	// AttestationTrustAnchor when set requires the node's attestation trust anchor
+	// (nexa.io/tee-trust-anchor) to match this value (e.g., "intel-ta", "azure-maa").
+	AttestationTrustAnchor string `json:"attestationTrustAnchor,omitempty"`
 }

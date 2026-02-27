@@ -162,7 +162,9 @@ All subsequent pods schedule without any Nexa constraints. The change appears in
 
 **Recommendation:** Integrate with a remote attestation framework (e.g., Intel Trust Authority, AMD SEV-SNP attestation) to verify TEE claims before labeling nodes. This is a future enhancement — Nexa's label-based model is the scheduling layer; attestation belongs in the provisioning layer.
 
-**Status:** Accepted risk — documented limitation. Same trust model as all other `nexa.io/*` node labels.
+**Status:** Mitigated when `RequireAttestation=true` in ConfidentialPolicy. The attestation controller (`pkg/nodestate/attestation_controller.go`) periodically verifies TEE nodes against a remote attestation service and patches `nexa.io/tee-attested`, `nexa.io/tee-attestation-time`, and `nexa.io/tee-trust-anchor` labels. The confidential plugin Filter rejects nodes that fail attestation (fail-closed). Without `RequireAttestation`, the original label-trust model applies.
+
+**Code reference:** `pkg/attestation/` (Attester interface + HTTP client), `pkg/plugins/confidential/confidential.go` (Filter checks 4/4b/4c), `pkg/nodestate/attestation_controller.go` (periodic verification loop).
 
 ### 9. GPU VRAM Encryption Gap
 
@@ -191,6 +193,21 @@ All subsequent pods schedule without any Nexa constraints. The change appears in
 
 **Status:** Accepted risk — mitigated by fail-closed design and NTP assumption.
 
+### 11. Attestation Service Unavailability
+
+**Threat:** The remote attestation service (e.g., Intel Trust Authority, Azure MAA) is unreachable due to network partition, service outage, or misconfiguration. The attestation controller cannot verify TEE nodes.
+
+**Impact:** Availability, not security. The attestation controller is fail-closed: any verification error results in `nexa.io/tee-attested=false`. Nodes that were previously attested retain their last-verified labels until the next verification cycle patches them to `false`. The confidential plugin rejects nodes with `tee-attested=false` or missing labels. Result: all confidential workloads become unschedulable until the attestation service recovers.
+
+**Mitigation:**
+- `AttestationMaxAgeHours` provides a grace period — previously attested nodes remain valid for the configured duration even if the service is temporarily down
+- The attestation controller retries on each interval cycle (default 5 minutes)
+- The node state controller continues to function independently (pod lifecycle labels are unaffected)
+
+**Recommendation:** Monitor the attestation controller logs for repeated verification failures. Set `AttestationMaxAgeHours` to a value that balances security freshness with availability tolerance (e.g., 24-48 hours). Consider deploying the attestation service with high availability.
+
+**Status:** Accepted risk — fail-closed by design. This is an availability trade-off, not a security gap.
+
 ## Residual Risks
 
 | Risk | Severity | Notes |
@@ -200,7 +217,8 @@ All subsequent pods schedule without any Nexa constraints. The change appears in
 | Metrics information disclosure | Low | ClusterIP-only, standard kube-scheduler practice |
 | Stale node labels | Medium | Mitigated by Node State Controller |
 | Log volume under heavy load | Low | Every decision produces a JSON line; consider sampling for high-throughput clusters |
-| TEE label spoofing | Medium | Self-reported; requires external attestation for cryptographic guarantee |
+| TEE label spoofing | Medium | Mitigated with RequireAttestation=true; self-reported without attestation |
+| Attestation service unavailability | Low | Fail-closed; availability impact only, not security |
 | GPU VRAM unencrypted | Medium | Hardware limitation; no scheduling-layer mitigation available |
 | Wipe timestamp clock skew | Low | Fail-closed design prevents false acceptances; NTP required |
 

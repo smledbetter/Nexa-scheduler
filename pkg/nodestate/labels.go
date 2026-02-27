@@ -20,4 +20,15 @@ const (
 
 	// LabelOrg is the pod-level label identifying the organization that owns the workload.
 	LabelOrg = "nexa.io/org"
+
+	// LabelTEEAttested indicates whether a node's TEE claim has been verified
+	// by a remote attestation service. Set by the attestation controller.
+	LabelTEEAttested = "nexa.io/tee-attested"
+
+	// LabelTEEAttestationTime records when the node was last attested (RFC3339 format).
+	LabelTEEAttestationTime = "nexa.io/tee-attestation-time"
+
+	// LabelTEETrustAnchor identifies which attestation service verified the node
+	// (e.g., "intel-ta", "azure-maa").
+	LabelTEETrustAnchor = "nexa.io/tee-trust-anchor"
 )

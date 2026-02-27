@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	fwk "k8s.io/kube-scheduler/framework"
 
@@ -421,5 +422,221 @@ func TestScoreDisabledPlugin(t *testing.T) {
 	}
 	if score != 0 {
 		t.Errorf("disabled plugin should score 0, got %d", score)
+	}
+}
+
+func TestFilterAttestation(t *testing.T) {
+	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	recentTS := now.Add(-2 * time.Hour).Format(time.RFC3339)
+	staleTS := now.Add(-48 * time.Hour).Format(time.RFC3339)
+	frozenNow := func() time.Time { return now }
+
+	tests := []struct {
+		name       string
+		policy     policy.ConfidentialPolicy
+		podLabels  map[string]string
+		nodeLabels map[string]string
+		wantPass   bool
+		wantReason string
+	}{
+		{
+			name:       "attestation not required -- accept without attestation labels",
+			policy:     policy.ConfidentialPolicy{Enabled: true, RequireAttestation: false},
+			podLabels:  map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{"nexa.io/tee": "tdx"},
+			wantPass:   true,
+		},
+		{
+			name:       "attestation required + attested=true -- accept",
+			policy:     policy.ConfidentialPolicy{Enabled: true, RequireAttestation: true},
+			podLabels:  map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{"nexa.io/tee": "tdx", "nexa.io/tee-attested": "true"},
+			wantPass:   true,
+		},
+		{
+			name:       "attestation required + attested=false -- reject",
+			policy:     policy.ConfidentialPolicy{Enabled: true, RequireAttestation: true},
+			podLabels:  map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{"nexa.io/tee": "tdx", "nexa.io/tee-attested": "false"},
+			wantPass:   false,
+			wantReason: "not passed remote attestation",
+		},
+		{
+			name:       "attestation required + label missing -- reject (fail-closed)",
+			policy:     policy.ConfidentialPolicy{Enabled: true, RequireAttestation: true},
+			podLabels:  map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{"nexa.io/tee": "tdx"},
+			wantPass:   false,
+			wantReason: "not passed remote attestation",
+		},
+		{
+			name: "attestation freshness -- recent timestamp -- accept",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationMaxAgeHours: 24,
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":                  "tdx",
+				"nexa.io/tee-attested":         "true",
+				"nexa.io/tee-attestation-time": recentTS,
+			},
+			wantPass: true,
+		},
+		{
+			name: "attestation freshness -- stale timestamp -- reject",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationMaxAgeHours: 24,
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":                  "tdx",
+				"nexa.io/tee-attested":         "true",
+				"nexa.io/tee-attestation-time": staleTS,
+			},
+			wantPass:   false,
+			wantReason: "attestation expired",
+		},
+		{
+			name: "attestation freshness -- missing timestamp -- reject (fail-closed)",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationMaxAgeHours: 24,
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":          "tdx",
+				"nexa.io/tee-attested": "true",
+			},
+			wantPass:   false,
+			wantReason: "missing nexa.io/tee-attestation-time",
+		},
+		{
+			name: "attestation freshness -- malformed timestamp -- reject",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationMaxAgeHours: 24,
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":                  "tdx",
+				"nexa.io/tee-attested":         "true",
+				"nexa.io/tee-attestation-time": "not-a-timestamp",
+			},
+			wantPass:   false,
+			wantReason: "malformed tee-attestation-time",
+		},
+		{
+			name: "trust anchor -- match -- accept",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationTrustAnchor: "intel-ta",
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":              "tdx",
+				"nexa.io/tee-attested":     "true",
+				"nexa.io/tee-trust-anchor": "intel-ta",
+			},
+			wantPass: true,
+		},
+		{
+			name: "trust anchor -- mismatch -- reject",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationTrustAnchor: "azure-maa",
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":              "tdx",
+				"nexa.io/tee-attested":     "true",
+				"nexa.io/tee-trust-anchor": "intel-ta",
+			},
+			wantPass:   false,
+			wantReason: "trust anchor",
+		},
+		{
+			name: "trust anchor -- missing label -- reject",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true, AttestationTrustAnchor: "intel-ta",
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":          "tdx",
+				"nexa.io/tee-attested": "true",
+			},
+			wantPass:   false,
+			wantReason: "trust anchor",
+		},
+		{
+			name: "non-confidential pod -- attestation not checked",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true,
+			},
+			podLabels:  map[string]string{},
+			nodeLabels: map[string]string{"nexa.io/tee": "tdx"},
+			wantPass:   true,
+		},
+		{
+			name: "combined: attestation + freshness + trust anchor -- all pass",
+			policy: policy.ConfidentialPolicy{
+				Enabled: true, RequireAttestation: true,
+				AttestationMaxAgeHours: 24, AttestationTrustAnchor: "intel-ta",
+			},
+			podLabels: map[string]string{"nexa.io/confidential": "required"},
+			nodeLabels: map[string]string{
+				"nexa.io/tee":                  "tdx",
+				"nexa.io/tee-attested":         "true",
+				"nexa.io/tee-attestation-time": recentTS,
+				"nexa.io/tee-trust-anchor":     "intel-ta",
+			},
+			wantPass: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &policy.StaticProvider{P: &policy.Policy{Confidential: tt.policy}}
+			p := NewWithProvider(provider, frozenNow)
+
+			pod := nt.MakePod("test-pod", tt.podLabels)
+			node := nt.MakeNode("test-node", tt.nodeLabels)
+			nodeInfo := nt.MakeNodeInfo(node)
+
+			status := p.Filter(context.Background(), nil, pod, nodeInfo)
+			if tt.wantPass {
+				if !status.IsSuccess() {
+					t.Errorf("expected accept, got reject: %s", status.Message())
+				}
+			} else {
+				if status.IsSuccess() {
+					t.Error("expected reject, got accept")
+				}
+				if status.Code() != fwk.Unschedulable {
+					t.Errorf("expected Unschedulable, got %v", status.Code())
+				}
+				if tt.wantReason != "" && !strings.Contains(status.Message(), tt.wantReason) {
+					t.Errorf("reason %q not found in message %q", tt.wantReason, status.Message())
+				}
+			}
+		})
+	}
+}
+
+func TestFilterAttestationFreshnessDisabled(t *testing.T) {
+	// AttestationMaxAgeHours=0 means freshness is not checked.
+	provider := &policy.StaticProvider{P: &policy.Policy{Confidential: policy.ConfidentialPolicy{
+		Enabled:                true,
+		RequireAttestation:     true,
+		AttestationMaxAgeHours: 0,
+	}}}
+	p := NewWithProvider(provider)
+
+	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/confidential": "required"})
+	node := nt.MakeNode("test-node", map[string]string{
+		"nexa.io/tee":          "tdx",
+		"nexa.io/tee-attested": "true",
+		// No attestation-time label — should pass because freshness check is disabled.
+	})
+	nodeInfo := nt.MakeNodeInfo(node)
+
+	status := p.Filter(context.Background(), nil, pod, nodeInfo)
+	if !status.IsSuccess() {
+		t.Errorf("expected accept (freshness disabled), got reject: %s", status.Message())
 	}
 }
