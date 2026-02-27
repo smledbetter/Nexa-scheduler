@@ -2,16 +2,16 @@
 
 ## Current State
 
-- **Status:** Milestone 1 in progress (admission webhook shipped, Kueue integration next)
-- **Tests:** 82 top-level (+ 13 smoke tests behind `//go:build smoke`, all passing)
+- **Status:** Milestone 1 complete (admission webhook + Kueue integration shipped). Starting Milestone 2.
+- **Tests:** 82 top-level (+ 16 smoke tests behind `//go:build smoke`, all passing)
 - **Coverage:** ~92% overall (100% metrics, 87.1% audit, 92.0% privacy, 89.1% region, 95.7% policy, 85.9% nodestate, 100% testing, 93.2% webhook)
-- **LOC:** ~8850 (application + deployment, excluding go.sum/config)
+- **LOC:** ~9450 (application + deployment, excluding go.sum/config)
 - **Binaries:** 3 (scheduler, node controller, webhook)
 - **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide (docs/)
-- **Sprints completed:** 13 (Sprint 0–12), across 12 phases
+- **Docs:** Quickstart, architecture, threat model (label spoofing mitigated), integration guide with Kueue section (docs/)
+- **Sprints completed:** 14 (Sprint 0–13), across 13 phases
 - **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
@@ -212,7 +212,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Milestone 1: Production Trust — [Sprints 12–13]
+### Milestone 1: Production Trust — [Sprints 12–13] ✅
 
 **Goal:** Make Nexa's privacy guarantees enforceable, not advisory. Close the label spoofing threat (highest-severity documented risk) and validate Kueue co-deployment so platform teams can adopt Nexa alongside their existing batch infrastructure.
 
@@ -239,7 +239,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 **Estimated LOC:** 600–800 (actual: 1556 incl. Helm templates and tests)
 
-#### Phase 12: Kueue Integration — [Sprint 13]
+#### Phase 12: Kueue Integration — [Sprint 13] ✅
 
 **Goal:** Documented and tested co-deployment of Kueue + Nexa. Kueue admits jobs (quota, fairness), Nexa places pods (privacy, region). Platform engineers can install both without conflicts.
 
@@ -253,7 +253,7 @@ These refine or override the PRD where the original recommendations were impreci
 - Document potential conflict: Kueue ResourceFlavor nodeSelector vs. Nexa region filter. Configuration concern, not code concern
 - Kueue version compatibility matrix (pin to specific Kueue release in smoke tests)
 
-**Estimated LOC:** 300–600 (smoke tests + documentation)
+**Estimated LOC:** 300–600 (smoke tests + documentation) (actual: 592)
 
 ---
 
