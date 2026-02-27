@@ -1,0 +1,17 @@
+apiVersion: v2
+name: nexa-scheduler
+description: Privacy-aware Kubernetes scheduler with region affinity, node cleanliness, and audit logging
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - scheduler
+  - privacy
+  - compliance
+  - multi-tenant
+home: https://github.com/nexascheduler/nexa
+sources:
+  - https://github.com/nexascheduler/nexa
+maintainers:
+  - name: Nexa Scheduler Team

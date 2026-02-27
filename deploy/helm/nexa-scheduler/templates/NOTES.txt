@@ -1,0 +1,41 @@
+Nexa Scheduler has been installed.
+
+1. Verify the scheduler is running:
+
+   kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nexa-scheduler.name" . }}"
+
+2. Check the scheduler logs:
+
+   kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "nexa-scheduler.name" . }}"
+
+3. Test with a sample pod:
+
+   cat <<EOF | kubectl apply -f -
+   apiVersion: v1
+   kind: Pod
+   metadata:
+     name: nexa-test
+     labels:
+       nexa.io/region: "us-west-1"
+       nexa.io/privacy: "standard"
+   spec:
+     schedulerName: nexa-scheduler
+     containers:
+       - name: test
+         image: busybox:latest
+         command: ["sleep", "30"]
+   EOF
+
+4. Verify the pod was scheduled by Nexa:
+
+   kubectl get pod nexa-test -o jsonpath='{.spec.nodeName}'
+
+5. View scheduling metrics:
+
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "nexa-scheduler.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+   Then open: https://localhost:{{ .Values.service.port }}/metrics
+
+6. Clean up the test pod:
+
+   kubectl delete pod nexa-test

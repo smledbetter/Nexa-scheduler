@@ -3,4 +3,4 @@ CLAUDE.local.md
 
 # Build artifacts
 bin/
-nexa-scheduler
+/nexa-scheduler

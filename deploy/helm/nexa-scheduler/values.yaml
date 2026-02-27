@@ -1,0 +1,94 @@
+# Nexa Scheduler Helm Values
+# See docs/ROADMAP.md for project context.
+
+# -- Number of scheduler replicas. Leader election is enabled when > 1.
+replicaCount: 1
+
+image:
+  # -- Container image repository.
+  repository: nexascheduler/nexa-scheduler
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart appVersion.
+  tag: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the release name.
+nameOverride: ""
+# -- Override the full release name.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount for the scheduler.
+  create: true
+  # -- Annotations to add to the ServiceAccount.
+  annotations: {}
+  # -- Name override. Defaults to the fullname template.
+  name: ""
+
+rbac:
+  # -- Create ClusterRole and ClusterRoleBinding.
+  create: true
+
+# -- Pod annotations.
+podAnnotations: {}
+
+# -- Pod security context.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# -- Container security context.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Container resource requests and limits.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# -- Node selector for scheduler pod placement.
+nodeSelector: {}
+
+# -- Tolerations for scheduler pod placement.
+tolerations: []
+
+# -- Affinity rules for scheduler pod placement.
+affinity: {}
+
+# Scheduler configuration
+scheduler:
+  # -- Leader election. Enable when running multiple replicas.
+  leaderElect: false
+
+# Policy configuration (mounted as ConfigMap)
+policy:
+  # -- Region policy settings.
+  region:
+    enabled: true
+    defaultRegion: ""
+    defaultZone: ""
+  # -- Privacy policy settings.
+  privacy:
+    enabled: true
+    defaultPrivacy: "standard"
+    strictOrgIsolation: false
+
+# Metrics service
+service:
+  # -- Service type for the metrics endpoint.
+  type: ClusterIP
+  # -- Port for the secure scheduler endpoint (serves metrics).
+  port: 10259
