@@ -1,9 +1,11 @@
 // Package region implements region and zone affinity scheduling.
-// In this initial scaffold, the plugin is a no-op that accepts all nodes.
+// Pods with nexa.io/region or nexa.io/zone labels are only placed on nodes
+// with matching labels. Score prefers exact zone matches over region-only matches.
 package region
 
 import (
 	"context"
+	"fmt"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -11,8 +13,14 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// Name is the name of the plugin used in the plugin registry and configurations.
-const Name = "NexaRegion"
+const (
+	// Name is the name of the plugin used in the plugin registry and configurations.
+	Name = "NexaRegion"
+
+	// Label keys for region and zone affinity.
+	labelRegion = "nexa.io/region"
+	labelZone   = "nexa.io/zone"
+)
 
 // Plugin implements region and zone affinity filtering and scoring.
 type Plugin struct {
@@ -27,19 +35,73 @@ func (p *Plugin) Name() string {
 	return Name
 }
 
-// Filter evaluates whether a node is suitable for the pod based on region/zone labels.
-// Currently a no-op: accepts all nodes.
-func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, _ *v1.Pod, _ fwk.NodeInfo) *fwk.Status {
-	return nil // nil means success
+// Filter rejects nodes that do not match the pod's required region or zone.
+// If the pod has no region/zone labels (or they are empty), all nodes pass.
+func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
+	podRegion := podLabel(pod, labelRegion)
+	podZone := podLabel(pod, labelZone)
+
+	// No region/zone preference — accept all nodes.
+	if podRegion == "" && podZone == "" {
+		return nil
+	}
+
+	node := nodeInfo.Node()
+
+	if podRegion != "" {
+		nodeRegion := node.Labels[labelRegion]
+		if nodeRegion != podRegion {
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+				"node %s region %q does not match required region %q; add label %s=%s to the node",
+				node.Name, nodeRegion, podRegion, labelRegion, podRegion,
+			))
+		}
+	}
+
+	if podZone != "" {
+		nodeZone := node.Labels[labelZone]
+		if nodeZone != podZone {
+			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
+				"node %s zone %q does not match required zone %q; add label %s=%s to the node",
+				node.Name, nodeZone, podZone, labelZone, podZone,
+			))
+		}
+	}
+
+	return nil
 }
 
 // Score ranks nodes by region/zone match quality.
-// Currently a no-op: all nodes score 0.
-func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, _ *v1.Pod, _ fwk.NodeInfo) (int64, *fwk.Status) {
-	return 0, nil
+//
+//	Exact zone + region match: framework.MaxNodeScore (100)
+//	Region match only:         framework.MaxNodeScore / 2 (50)
+//	No pod preference:         0
+func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
+	podRegion := podLabel(pod, labelRegion)
+	podZone := podLabel(pod, labelZone)
+
+	// No preference — neutral score.
+	if podRegion == "" && podZone == "" {
+		return 0, nil
+	}
+
+	node := nodeInfo.Node()
+	var score int64
+
+	// Region match.
+	if podRegion != "" && node.Labels[labelRegion] == podRegion {
+		score = framework.MaxNodeScore / 2
+	}
+
+	// Zone match upgrades to max score.
+	if podZone != "" && node.Labels[labelZone] == podZone {
+		score = framework.MaxNodeScore
+	}
+
+	return score, nil
 }
 
-// ScoreExtensions returns nil since no normalization is needed.
+// ScoreExtensions returns nil since scores are already in the 0-100 range.
 func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
@@ -47,4 +109,12 @@ func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
 // New creates a new Region plugin.
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	return &Plugin{handle: h}, nil
+}
+
+// podLabel returns the value of a label on a pod, or "" if absent.
+func podLabel(pod *v1.Pod, key string) string {
+	if pod.Labels == nil {
+		return ""
+	}
+	return pod.Labels[key]
 }

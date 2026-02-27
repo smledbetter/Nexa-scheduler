@@ -2,11 +2,13 @@ package region
 
 import (
 	"context"
+	"strings"
 	"testing"
 
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+
+	nt "github.com/nexascheduler/nexa/pkg/testing"
 )
 
 // Compile-time interface compliance checks.
@@ -20,84 +22,6 @@ func TestName(t *testing.T) {
 	}
 }
 
-func TestFilter(t *testing.T) {
-	tests := []struct {
-		name string
-		pod  *v1.Pod
-	}{
-		{
-			name: "pod with no labels",
-			pod:  &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod"}},
-		},
-		{
-			name: "pod with region label",
-			pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{
-				Name:   "region-pod",
-				Labels: map[string]string{"nexa.io/region": "us-west1"},
-			}},
-		},
-		{
-			name: "pod with zone label",
-			pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{
-				Name:   "zone-pod",
-				Labels: map[string]string{"nexa.io/zone": "us-west1-a"},
-			}},
-		},
-	}
-
-	p := &Plugin{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			status := p.Filter(context.Background(), nil, tt.pod, nil)
-			if status != nil {
-				t.Errorf("Filter() = %v, want nil (success)", status)
-			}
-		})
-	}
-}
-
-func TestScore(t *testing.T) {
-	tests := []struct {
-		name      string
-		pod       *v1.Pod
-		wantScore int64
-	}{
-		{
-			name:      "pod with no labels scores 0",
-			pod:       &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "test-pod"}},
-			wantScore: 0,
-		},
-		{
-			name: "pod with region label scores 0",
-			pod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{
-				Name:   "region-pod",
-				Labels: map[string]string{"nexa.io/region": "us-west1"},
-			}},
-			wantScore: 0,
-		},
-	}
-
-	p := &Plugin{}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			score, status := p.Score(context.Background(), nil, tt.pod, nil)
-			if status != nil {
-				t.Errorf("Score() status = %v, want nil (success)", status)
-			}
-			if score != tt.wantScore {
-				t.Errorf("Score() = %d, want %d", score, tt.wantScore)
-			}
-		})
-	}
-}
-
-func TestScoreExtensions(t *testing.T) {
-	p := &Plugin{}
-	if ext := p.ScoreExtensions(); ext != nil {
-		t.Errorf("ScoreExtensions() = %v, want nil", ext)
-	}
-}
-
 func TestNew(t *testing.T) {
 	plugin, err := New(context.Background(), nil, nil)
 	if err != nil {
@@ -108,5 +32,189 @@ func TestNew(t *testing.T) {
 	}
 	if plugin.Name() != Name {
 		t.Errorf("New() plugin name = %q, want %q", plugin.Name(), Name)
+	}
+}
+
+func TestScoreExtensions(t *testing.T) {
+	p := &Plugin{}
+	if ext := p.ScoreExtensions(); ext != nil {
+		t.Errorf("ScoreExtensions() = %v, want nil", ext)
+	}
+}
+
+func TestFilter(t *testing.T) {
+	tests := []struct {
+		name       string
+		podLabels  map[string]string
+		nodeLabels map[string]string
+		wantPass   bool
+		wantReason string // substring to match in rejection reason
+	}{
+		{
+			name:       "no pod labels — accept all nodes",
+			podLabels:  nil,
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantPass:   true,
+		},
+		{
+			name:       "empty region label — treated as no preference",
+			podLabels:  map[string]string{"nexa.io/region": ""},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantPass:   true,
+		},
+		{
+			name:       "region match — accept",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantPass:   true,
+		},
+		{
+			name:       "region mismatch — reject",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: map[string]string{"nexa.io/region": "eu-west1"},
+			wantPass:   false,
+			wantReason: "does not match required region",
+		},
+		{
+			name:       "node missing region label — reject",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: nil,
+			wantPass:   false,
+			wantReason: "does not match required region",
+		},
+		{
+			name:       "zone match — accept",
+			podLabels:  map[string]string{"nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/zone": "us-west1-a"},
+			wantPass:   true,
+		},
+		{
+			name:       "zone mismatch — reject",
+			podLabels:  map[string]string{"nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/zone": "us-west1-b"},
+			wantPass:   false,
+			wantReason: "does not match required zone",
+		},
+		{
+			name:       "region match + zone match — accept",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			wantPass:   true,
+		},
+		{
+			name:       "region match + zone mismatch — reject",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-b"},
+			wantPass:   false,
+			wantReason: "does not match required zone",
+		},
+		{
+			name:       "special characters in region label — no panic",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1/special;chars"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantPass:   false,
+			wantReason: "does not match required region",
+		},
+		{
+			name:       "actionable reason includes fix suggestion",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: map[string]string{"nexa.io/region": "eu-west1"},
+			wantPass:   false,
+			wantReason: "add label nexa.io/region=us-west1",
+		},
+	}
+
+	p := &Plugin{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := nt.MakePod("test-pod", tt.podLabels)
+			node := nt.MakeNode("test-node", tt.nodeLabels)
+			nodeInfo := nt.MakeNodeInfo(node)
+
+			status := p.Filter(context.Background(), nil, pod, nodeInfo)
+
+			if tt.wantPass {
+				if status != nil && !status.IsSuccess() {
+					t.Errorf("Filter() rejected node, want accept: %v", status.Message())
+				}
+			} else {
+				if status == nil || status.IsSuccess() {
+					t.Error("Filter() accepted node, want reject")
+				} else if status.Code() != fwk.Unschedulable {
+					t.Errorf("Filter() code = %v, want Unschedulable", status.Code())
+				} else if tt.wantReason != "" && !strings.Contains(status.Message(), tt.wantReason) {
+					t.Errorf("Filter() reason = %q, want substring %q", status.Message(), tt.wantReason)
+				}
+			}
+		})
+	}
+}
+
+func TestScore(t *testing.T) {
+	tests := []struct {
+		name       string
+		podLabels  map[string]string
+		nodeLabels map[string]string
+		wantScore  int64
+	}{
+		{
+			name:       "no pod labels — score 0",
+			podLabels:  nil,
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantScore:  0,
+		},
+		{
+			name:       "region match only — score 50",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantScore:  framework.MaxNodeScore / 2,
+		},
+		{
+			name:       "zone match only — score 100",
+			podLabels:  map[string]string{"nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/zone": "us-west1-a"},
+			wantScore:  framework.MaxNodeScore,
+		},
+		{
+			name:       "region + zone match — score 100",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			wantScore:  framework.MaxNodeScore,
+		},
+		{
+			name:       "region match + zone mismatch — score 50",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-a"},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1", "nexa.io/zone": "us-west1-b"},
+			wantScore:  framework.MaxNodeScore / 2,
+		},
+		{
+			name:       "region mismatch — score 0",
+			podLabels:  map[string]string{"nexa.io/region": "us-west1"},
+			nodeLabels: map[string]string{"nexa.io/region": "eu-west1"},
+			wantScore:  0,
+		},
+		{
+			name:       "empty region label — score 0 (no preference)",
+			podLabels:  map[string]string{"nexa.io/region": ""},
+			nodeLabels: map[string]string{"nexa.io/region": "us-west1"},
+			wantScore:  0,
+		},
+	}
+
+	p := &Plugin{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := nt.MakePod("test-pod", tt.podLabels)
+			node := nt.MakeNode("test-node", tt.nodeLabels)
+			nodeInfo := nt.MakeNodeInfo(node)
+
+			score, status := p.Score(context.Background(), nil, pod, nodeInfo)
+			if status != nil && !status.IsSuccess() {
+				t.Errorf("Score() status = %v, want success", status.Message())
+			}
+			if score != tt.wantScore {
+				t.Errorf("Score() = %d, want %d", score, tt.wantScore)
+			}
+		})
 	}
 }
