@@ -61,6 +61,74 @@ func repoRoot(t *testing.T) string {
 	}
 }
 
+// TestDeployClusterRoleContract verifies that the ClusterRole in deployment
+// manifests includes all resource types the kube-scheduler framework requires.
+// Without these, the scheduler's informers fail with "forbidden" errors and
+// pods never get scheduled.
+func TestDeployClusterRoleContract(t *testing.T) {
+	root := repoRoot(t)
+
+	// Resource groups the kube-scheduler framework needs beyond basic pod/node access.
+	requiredResources := []string{
+		"namespaces",
+		"services",
+		"replicationcontrollers",
+		"persistentvolumes",
+		"persistentvolumeclaims",
+		"poddisruptionbudgets",
+		"storageclasses",
+		"csinodes",
+		"csidrivers",
+		"csistoragecapacities",
+		"volumeattachments",
+		"resourceslices",
+		"resourceclaims",
+		"deviceclasses",
+	}
+
+	for _, file := range []struct {
+		name string
+		path string
+	}{
+		{"helm template", filepath.Join(root, "deploy", "helm", "nexa-scheduler", "templates", "clusterrole.yaml")},
+		{"raw manifest", filepath.Join(root, "deploy", "manifests", "clusterrole.yaml")},
+	} {
+		t.Run(file.name+" has all framework resources", func(t *testing.T) {
+			content := readFile(t, file.path)
+			for _, res := range requiredResources {
+				if !strings.Contains(content, res) {
+					t.Errorf("%s missing required resource %q", file.name, res)
+				}
+			}
+		})
+	}
+}
+
+// TestDeployAuthPathContract verifies that the scheduler deployment includes
+// --authorization-always-allow-paths so Prometheus can scrape /metrics without
+// mTLS client certificates.
+func TestDeployAuthPathContract(t *testing.T) {
+	root := repoRoot(t)
+
+	for _, file := range []struct {
+		name string
+		path string
+	}{
+		{"helm template", filepath.Join(root, "deploy", "helm", "nexa-scheduler", "templates", "deployment.yaml")},
+		{"raw manifest", filepath.Join(root, "deploy", "manifests", "deployment.yaml")},
+	} {
+		t.Run(file.name+" has authorization-always-allow-paths", func(t *testing.T) {
+			content := readFile(t, file.path)
+			if !strings.Contains(content, "--authorization-always-allow-paths") {
+				t.Errorf("%s missing --authorization-always-allow-paths flag", file.name)
+			}
+			if !strings.Contains(content, "/metrics") {
+				t.Errorf("%s --authorization-always-allow-paths does not include /metrics", file.name)
+			}
+		})
+	}
+}
+
 // readFile reads a file and fails the test if it doesn't exist.
 func readFile(t *testing.T, path string) string {
 	t.Helper()
