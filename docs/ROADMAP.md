@@ -2,16 +2,16 @@
 
 ## Current State
 
-- **Status:** All 3 milestones done + hardening complete. Shared plugin base extracted, nodestate coverage recovered, 4 E2E smoke tests added.
-- **Tests:** 121 top-level (+ 22 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~93% overall (100% metrics, 87.1% audit, 93.8% privacy, 89.4% region, 95.7% policy, 94.6% nodestate, 100% testing, 93.2% webhook, 92.8% compliance, 91.9% confidential, 78.9% shared base)
-- **LOC:** ~11800 (application + deployment, excluding go.sum/config)
+- **Status:** All 3 milestones done + hardening + remote attestation complete. TEE self-reporting trust gap closed with cryptographic verification.
+- **Tests:** 137 top-level (+ 22 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~93% overall (100% metrics, 87.1% audit, 93.8% privacy, 89.4% region, 95.7% policy, 93.4% nodestate, 100% testing, 93.2% webhook, 92.8% compliance, 94.3% confidential, 78.9% shared base, 92.0% attestation)
+- **LOC:** ~12900 (application + deployment, excluding go.sum/config)
 - **Binaries:** 4 (scheduler, node controller, webhook, compliance CLI)
 - **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model (label spoofing + TEE trust + GPU VRAM gap mitigated/documented), integration guide with Kueue + immutable audit storage sections (docs/), PRD rewritten with sharpened UVP
-- **Sprints completed:** 17 (Sprint 0–16), across 16 phases
+- **Docs:** Quickstart, architecture, threat model (label spoofing + TEE trust + GPU VRAM gap + attestation service unavailability mitigated/documented), integration guide with Kueue + immutable audit storage sections (docs/), PRD rewritten with sharpened UVP
+- **Sprints completed:** 18 (Sprint 0–17), across 17 phases
 - **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
@@ -348,7 +348,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 16: Remote Attestation — [Sprint 17]
+### Phase 16: Remote Attestation — [Sprint 17] ✅
 
 **Goal:** Close the TEE self-reporting trust gap. Add remote attestation verification so `nexa.io/confidential=required` is backed by cryptographic proof, not just a node label.
 
