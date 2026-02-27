@@ -120,6 +120,8 @@ Read these files first:
 
 When all gates pass, say: "Ready for Phase 3: SHIP whenever you want to proceed."
 
+When the user says to proceed, run `/clear` before starting SHIP. The implementation context is no longer needed and will waste context window on metrics/retro work.
+
 ## Phase 3: SHIP
 
 1. **Collect metrics** using Flowstate MCP tools:
