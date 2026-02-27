@@ -1,6 +1,9 @@
 CLAUDE.local.md
 .claude/settings.local.json
 
+# Research notes
+docs/research/
+
 # Build artifacts
 bin/
 /nexa-scheduler
