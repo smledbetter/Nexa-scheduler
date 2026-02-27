@@ -120,7 +120,22 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 7: CRD Policy & Node State Controller — [Sprint 7]
+### Phase 7: GPU-Aware Scheduling — [Sprint 7]
+
+**Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups.
+
+**Deliverables:**
+- GPU topology Score plugin: prefer nodes where requested GPU count aligns with available contiguous GPUs; score based on `nvidia.com/gpu` extended resources and topology labels (`nexa.io/gpu-topology`, `nexa.io/nvlink-group`)
+- Gang-scheduling Permit plugin: hold pods belonging to a job group (`nexa.io/gang-group`) until all members are schedulable, then release together; timeout with configurable grace period
+- Preemption priority integration: priority classes for training vs. inference vs. batch workloads; configurable preemption policies in the policy engine (which job types can preempt which)
+- Filter plugin: reject nodes without sufficient GPU resources or incompatible accelerator type (`nexa.io/accelerator-type`: A100, H100, etc.)
+- Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering
+
+**Estimated LOC:** 800–1200
+
+---
+
+### Phase 8: CRD Policy & Node State Controller — [Sprint 8]
 
 **Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
 
@@ -135,7 +150,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 8: Helm Chart & Deployment — [Sprint 8]
+### Phase 9: Helm Chart & Deployment — [Sprint 9]
 
 **Goal:** One-command installation via Helm with sensible defaults.
 
@@ -151,7 +166,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 9: Documentation & Hardening — [Sprint 9]
+### Phase 10: Documentation & Hardening — [Sprint 10]
 
 **Goal:** Production-ready documentation and edge case handling.
 

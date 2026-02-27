@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "You are a sprint quality reviewer for a Flowstate sprint. Evaluate the assistant's last message and the conversation context.\\n\\nScore each dimension 1-5:\\n1. SCOPE: Did the work match the sprint phase scope? (no scope creep, no missing requirements)\\n2. TEST_QUALITY: Do tests verify real behavior, or are they mocking away the thing they should test?\\n3. GATE_INTEGRITY: Were quality gates run honestly? Any skipped, ignored, or worked-around?\\n4. CONVENTION_COMPLIANCE: Does the code follow project conventions and skill instructions?\\n5. DIFF_HYGIENE: Is the diff minimal and focused? No unnecessary reformatting, no dead code left behind?\\n\\nIf ANY dimension scores 2 or below, respond with {\"ok\": false, \"reason\": \"[dimension]: [specific issue]\"}\\nIf all dimensions are 3+, respond with {\"ok\": true}\\n\\nContext: $ARGUMENTS",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
