@@ -1,0 +1,280 @@
+//go:build smoke
+
+// Package smoke provides Kind-based end-to-end smoke tests for the Nexa scheduler.
+package smoke
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
+)
+
+const (
+	clusterName = "nexa-smoke"
+	helmRelease = "nexa-smoke"
+	namespace   = "nexa-system"
+)
+
+// tb is the subset of testing.TB used by setup helpers.
+// Both *testing.T and mainT satisfy this interface.
+type tb interface {
+	Helper()
+	Fatalf(format string, args ...any)
+	Cleanup(func())
+	Name() string
+}
+
+// repoRoot returns the absolute path to the repository root.
+func repoRoot(t tb) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not find repo root (no go.mod found)")
+			return "" // unreachable; satisfies compiler
+		}
+		dir = parent
+	}
+}
+
+// runCmd executes a command and returns combined output. Fails the test on error.
+func runCmd(t tb, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("command %s %v failed: %v\noutput: %s", name, args, err, out.String())
+	}
+	return out.String()
+}
+
+// runCmdNoFail executes a command and returns combined output and error.
+func runCmdNoFail(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return out.String(), err
+}
+
+// createCluster creates a Kind cluster with the given config.
+func createCluster(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	configPath := filepath.Join(root, "test", "smoke", "testdata", "kind-config.yaml")
+	runCmd(t, "kind", "create", "cluster",
+		"--name", clusterName,
+		"--config", configPath,
+		"--wait", "120s",
+	)
+}
+
+// deleteCluster deletes the Kind cluster.
+func deleteCluster() {
+	_, _ = runCmdNoFail("kind", "delete", "cluster", "--name", clusterName)
+}
+
+// buildAndLoadImage builds the Docker image and loads it into the Kind cluster.
+func buildAndLoadImage(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	runCmd(t, "docker", "build", "-t", "nexascheduler/nexa-scheduler:smoke", root)
+	runCmd(t, "kind", "load", "docker-image", "nexascheduler/nexa-scheduler:smoke", "--name", clusterName)
+}
+
+// installChart installs the Helm chart with smoke test overrides.
+func installChart(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	chartPath := filepath.Join(root, "deploy", "helm", "nexa-scheduler")
+	runCmd(t, "helm", "install", helmRelease, chartPath,
+		"--namespace", namespace,
+		"--create-namespace",
+		"--set", "image.tag=smoke",
+		"--set", "image.pullPolicy=Never",
+		"--wait",
+		"--timeout", "120s",
+	)
+}
+
+// uninstallChart removes the Helm release.
+func uninstallChart() {
+	_, _ = runCmdNoFail("helm", "uninstall", helmRelease, "--namespace", namespace)
+}
+
+// labelWorkers applies the node label matrix to the 3 Kind worker nodes.
+func labelWorkers(t tb) {
+	t.Helper()
+	client := kubeClient(t)
+	nodes, err := client.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+
+	// Collect worker nodes (non-control-plane).
+	var workers []string
+	for _, n := range nodes.Items {
+		if _, ok := n.Labels["node-role.kubernetes.io/control-plane"]; !ok {
+			workers = append(workers, n.Name)
+		}
+	}
+	if len(workers) < 3 {
+		t.Fatalf("expected 3 workers, got %d", len(workers))
+	}
+
+	// Worker-0: us-west1 / us-west1-a / wiped / org=alpha
+	runCmd(t, "kubectl", "label", "node", workers[0],
+		"nexa.io/region=us-west1",
+		"nexa.io/zone=us-west1-a",
+		"nexa.io/wiped=true",
+		"nexa.io/last-workload-org=alpha",
+		"--overwrite",
+	)
+	// Worker-1: us-west1 / us-west1-b / not wiped / no org
+	runCmd(t, "kubectl", "label", "node", workers[1],
+		"nexa.io/region=us-west1",
+		"nexa.io/zone=us-west1-b",
+		"--overwrite",
+	)
+	// Worker-2: eu-west1 / eu-west1-a / wiped / org=beta
+	runCmd(t, "kubectl", "label", "node", workers[2],
+		"nexa.io/region=eu-west1",
+		"nexa.io/zone=eu-west1-a",
+		"nexa.io/wiped=true",
+		"nexa.io/last-workload-org=beta",
+		"--overwrite",
+	)
+}
+
+// kubeClient returns a Kubernetes client configured for the Kind cluster.
+func kubeClient(t tb) kubernetes.Interface {
+	t.Helper()
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		home, _ := os.UserHomeDir()
+		kubeconfig = filepath.Join(home, ".kube", "config")
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		t.Fatalf("build kubeconfig: %v", err)
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("create kube client: %v", err)
+	}
+	return client
+}
+
+// createTestNamespace creates an isolated namespace for a test.
+func createTestNamespace(t *testing.T, client kubernetes.Interface) string {
+	t.Helper()
+	ns := fmt.Sprintf("smoke-%s-%d", t.Name(), time.Now().UnixNano()%10000)
+	// Sanitize: k8s namespace must be lowercase DNS label
+	ns = strings.ToLower(strings.ReplaceAll(ns, "/", "-"))
+	if len(ns) > 63 {
+		ns = ns[:63]
+	}
+	_, err := client.CoreV1().Namespaces().Create(context.Background(), &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: ns},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create namespace %s: %v", ns, err)
+	}
+	t.Cleanup(func() {
+		_ = client.CoreV1().Namespaces().Delete(context.Background(), ns, metav1.DeleteOptions{})
+	})
+	return ns
+}
+
+// makePod creates a pod spec for the Nexa scheduler with the given labels.
+func makePod(name string, labels map[string]string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: labels,
+		},
+		Spec: corev1.PodSpec{
+			SchedulerName: "nexa-scheduler",
+			Containers: []corev1.Container{
+				{
+					Name:    "test",
+					Image:   "busybox:latest",
+					Command: []string{"sleep", "300"},
+				},
+			},
+		},
+	}
+}
+
+// waitForPodScheduled waits until the pod is bound to a node (has a nodeName).
+func waitForPodScheduled(t *testing.T, client kubernetes.Interface, ns, name string, timeout time.Duration) string {
+	t.Helper()
+	var nodeName string
+	err := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		pod, err := client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		if pod.Spec.NodeName != "" {
+			nodeName = pod.Spec.NodeName
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("pod %s/%s not scheduled within %v: %v", ns, name, timeout, err)
+	}
+	return nodeName
+}
+
+// waitForPodPending verifies the pod stays Pending (unscheduled) for the given duration.
+func waitForPodPending(t *testing.T, client kubernetes.Interface, ns, name string, checkDuration time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(checkDuration)
+	for time.Now().Before(deadline) {
+		pod, err := client.CoreV1().Pods(ns).Get(context.Background(), name, metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+		if pod.Spec.NodeName != "" {
+			t.Fatalf("pod %s/%s was scheduled on %s, expected to stay Pending", ns, name, pod.Spec.NodeName)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// schedulerLogs returns the logs from the Nexa scheduler pod.
+func schedulerLogs(t *testing.T, client kubernetes.Interface) string {
+	t.Helper()
+	pods, err := client.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/name=nexa-scheduler",
+	})
+	if err != nil || len(pods.Items) == 0 {
+		t.Fatalf("could not find scheduler pod: %v", err)
+	}
+	out := runCmd(t, "kubectl", "logs", "-n", namespace, pods.Items[0].Name)
+	return out
+}

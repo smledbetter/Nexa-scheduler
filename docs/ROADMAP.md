@@ -125,7 +125,22 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 7: Documentation & Hardening — [Sprint 7]
+### Phase 7: Smoke Tests — [Sprint 7]
+
+**Goal:** Prove the scheduler works end-to-end on a real cluster. Fix the policy ConfigMap name mismatch from Sprint 6.
+
+**Deliverables:**
+- Bug fix: policy ConfigMap name must match `DefaultConfigMapName` ("nexa-scheduler-config")
+- Kind-based smoke test suite (7 scenarios: region filtering, privacy filtering, privacy rejection, org isolation, audit logs, metrics endpoint, policy hot reload)
+- Test helpers: cluster lifecycle (Kind CLI), pod/node factories, wait/assert utilities
+- Makefile `smoke` target with `//go:build smoke` tag isolation
+- 3-worker Kind cluster config with labeled nodes for constraint matrix testing
+
+**Estimated LOC:** 500–600
+
+---
+
+### Phase 8: Documentation & Hardening — [Sprint 8]
 
 **Goal:** Production-ready documentation and edge case handling.
 
@@ -136,13 +151,12 @@ These refine or override the PRD where the original recommendations were impreci
 - Integration guide (existing schedulers, monitoring, CI/CD)
 - Edge case hardening: scheduler crash recovery, ConfigMap deletion handling, node label race conditions
 - Fake clientset tests for ConfigMapProvider (covering New() and Get() paths that require a running API server)
-- End-to-end test suite (Kind-based)
 
 **Estimated LOC:** 500–1000
 
 ---
 
-### Phase 8: CRD Policy & Node State Controller — [Sprint 8]
+### Phase 9: CRD Policy & Node State Controller — [Sprint 9]
 
 **Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
 
@@ -158,7 +172,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 9: GPU & Confidential Compute Scheduling — [Sprint 9] (optional)
+### Phase 10: GPU & Confidential Compute Scheduling — [Sprint 10] (optional)
 
 **Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
 
@@ -179,7 +193,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 *Shared:*
 - Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering, TEE label filtering, confidential+GPU policy composition, runtimeClass enforcement
-- Threat model addendum (cross-ref Phase 7): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
+- Threat model addendum (cross-ref Phase 8): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
 
 **Known limitations (to document, not solve):**
 - Node labels are self-reported. Without remote attestation, `nexa.io/confidential=true` is a policy signal, not a cryptographic guarantee. Attestation integration is a future phase.
