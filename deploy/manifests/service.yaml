@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexa-scheduler
+  namespace: nexa-system
+  labels:
+    app.kubernetes.io/name: nexa-scheduler
+spec:
+  type: ClusterIP
+  ports:
+    - port: 10259
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app.kubernetes.io/name: nexa-scheduler

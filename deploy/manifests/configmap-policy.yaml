@@ -1,8 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: nexa-scheduler-config
+  name: nexa-scheduler-policy
   namespace: nexa-system
+  labels:
+    app.kubernetes.io/name: nexa-scheduler
 data:
   policy.json: |
     {

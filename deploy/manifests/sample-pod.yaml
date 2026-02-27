@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nexa-test
+  labels:
+    nexa.io/region: "us-west-1"
+    nexa.io/privacy: "standard"
+spec:
+  schedulerName: nexa-scheduler
+  containers:
+    - name: test
+      image: busybox:latest
+      command: ["sleep", "30"]

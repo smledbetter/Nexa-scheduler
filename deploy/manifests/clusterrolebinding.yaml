@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nexa-scheduler
+  labels:
+    app.kubernetes.io/name: nexa-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nexa-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: nexa-scheduler
+    namespace: nexa-system
