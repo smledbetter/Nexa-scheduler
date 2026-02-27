@@ -471,3 +471,63 @@ The scheduler's ClusterRole provides:
 | Write | Leases (create/get/update) | Leader election (when enabled) |
 
 The scheduler has **no write access to Nodes or ConfigMaps**. It cannot modify the labels or policies it reads.
+
+## Immutable Audit Storage
+
+The Nexa audit plugin writes structured JSON lines to stderr. For compliance reporting, these logs must be collected and stored immutably to preserve the evidence chain.
+
+### Recommended Pipeline
+
+1. **Collect**: Use Fluent Bit or Fluentd to parse scheduler stderr as JSON (see Logging section above).
+2. **Store**: Write to immutable storage with tamper protection.
+3. **Report**: Run `nexa-report` against the stored logs.
+
+### Storage Options
+
+**Amazon S3 with Object Lock:**
+
+```bash
+# Create bucket with Object Lock enabled
+aws s3api create-bucket --bucket nexa-audit-logs --object-lock-enabled-for-object-lock-configuration
+
+# Set default retention (compliance mode — cannot be shortened)
+aws s3api put-object-lock-configuration --bucket nexa-audit-logs \
+  --object-lock-configuration '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Years":7}}}'
+```
+
+**Grafana Loki with Retention:**
+
+```yaml
+# loki-config.yaml
+limits_config:
+  retention_period: 2556d  # 7 years
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+```
+
+### Generating Reports
+
+```bash
+# From a local file
+nexa-report --input /var/log/nexa/audit.jsonl \
+  --standard hipaa --org alpha \
+  --from 2026-01-01T00:00:00Z --to 2026-02-01T00:00:00Z
+
+# From S3 via stdin
+aws s3 cp s3://nexa-audit-logs/2026-01.jsonl - | \
+  nexa-report --standard hipaa --org alpha --format markdown
+```
+
+### Retention Requirements
+
+| Standard | Minimum Retention |
+|----------|------------------|
+| HIPAA | 6 years |
+| SOC 2 | 7 years |
+| GDPR | Duration of processing activity |
+
+### Integrity Considerations
+
+- **Object Lock / WORM** prevents log tampering after collection.
+- **Access control**: Limit read access to compliance and security teams.
+- **Chain of custody**: Use log shipping timestamps to prove continuous collection.
