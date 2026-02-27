@@ -147,7 +147,7 @@ func TestFilter(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{policy: enabledPolicy()}
+	p := NewWithProvider(enabledPolicy())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -174,7 +174,7 @@ func TestFilter(t *testing.T) {
 }
 
 func TestFilterDisabledPlugin(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}}}
+	p := NewWithProvider(&policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}})
 	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
 	node := nt.MakeNode("test-node", map[string]string{})
 	nodeInfo := nt.MakeNodeInfo(node)
@@ -190,7 +190,7 @@ func TestFilterDefaultPrivacy(t *testing.T) {
 		Enabled:        true,
 		DefaultPrivacy: "high",
 	}}}
-	p := &Plugin{policy: provider}
+	p := NewWithProvider(provider)
 
 	t.Run("unlabeled pod uses default privacy — rejects unwiped node", func(t *testing.T) {
 		pod := nt.MakePod("test-pod", nil)
@@ -231,7 +231,7 @@ func TestFilterStrictOrgIsolation(t *testing.T) {
 		Enabled:            true,
 		StrictOrgIsolation: true,
 	}}}
-	p := &Plugin{policy: provider}
+	p := NewWithProvider(provider)
 
 	t.Run("standard pod with org — rejects cross-org node", func(t *testing.T) {
 		pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "standard", "nexa.io/org": "acme"})
@@ -283,7 +283,7 @@ func TestFilterStrictOrgIsolation(t *testing.T) {
 }
 
 func TestFilterPolicyError(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{Err: errors.New("config unavailable")}}
+	p := NewWithProvider(&policy.StaticProvider{Err: errors.New("config unavailable")})
 	pod := nt.MakePod("test-pod", nil)
 	node := nt.MakeNode("test-node", nil)
 	nodeInfo := nt.MakeNodeInfo(node)
@@ -345,7 +345,7 @@ func TestScore(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{policy: enabledPolicy()}
+	p := NewWithProvider(enabledPolicy())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -364,7 +364,7 @@ func TestScore(t *testing.T) {
 }
 
 func TestScoreDisabledPlugin(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}}}
+	p := NewWithProvider(&policy.StaticProvider{P: &policy.Policy{Privacy: policy.PrivacyPolicy{Enabled: false}}})
 	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
 	node := nt.MakeNode("test-node", map[string]string{"nexa.io/wiped": "true"})
 	nodeInfo := nt.MakeNodeInfo(node)
@@ -485,7 +485,7 @@ func TestFilterCooldownDisabled(t *testing.T) {
 		Enabled:       true,
 		CooldownHours: 0,
 	}}}
-	p := &Plugin{policy: provider}
+	p := NewWithProvider(provider)
 
 	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/privacy": "high"})
 	node := nt.MakeNode("test-node", map[string]string{"nexa.io/wiped": "true"})

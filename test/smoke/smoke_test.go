@@ -781,3 +781,245 @@ spec:
 	nodeName := waitForPodScheduled(t, testClient, ns, "freshness-test", 60*time.Second)
 	t.Logf("high-privacy pod with cooldown scheduled on %s (has recent wipe-timestamp)", nodeName)
 }
+
+// TestE2EFullChain is the flagship smoke test. It exercises the complete evidence chain:
+// webhook admission → region + privacy + confidential scheduling → audit log → compliance parsing.
+func TestE2EFullChain(t *testing.T) {
+	if !webhookEnabled {
+		t.Skip("webhook not available — skipping full-chain test")
+	}
+
+	// Enable all policies via CRD.
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+  confidentialPolicy:
+    enabled: true
+    requireEncryptedDisk: true
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+	time.Sleep(5 * time.Second)
+
+	// Create a webhook-enabled namespace for org=alpha.
+	nsName := fmt.Sprintf("e2e-fullchain-%d", time.Now().UnixNano()%1000000)
+	createWebhookTestNamespace(t, testClient, nsName)
+
+	// Pod requiring all 3 constraint types: region, privacy, confidential.
+	pod := makePod("fullchain-test", map[string]string{
+		"nexa.io/org":          "alpha",
+		"nexa.io/privacy":      "high",
+		"nexa.io/region":       "us-west1",
+		"nexa.io/confidential": "required",
+	})
+	_, err := testClient.CoreV1().Pods(nsName).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod (webhook should admit org=alpha in authorized namespace): %v", err)
+	}
+
+	// Should land on worker-0: only us-west1 node with TEE + encrypted + wiped + org=alpha.
+	nodeName := waitForPodScheduled(t, testClient, nsName, "fullchain-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	if r := node.Labels["nexa.io/region"]; r != "us-west1" {
+		t.Errorf("expected region=us-west1, got %q", r)
+	}
+	if tee := node.Labels["nexa.io/tee"]; tee == "" || tee == "none" {
+		t.Errorf("expected TEE-capable node, got tee=%q", tee)
+	}
+
+	// Verify audit log contains a scheduled event for this pod.
+	time.Sleep(2 * time.Second) // let logger flush
+	logs := schedulerLogs(t, testClient)
+	if !strings.Contains(logs, "fullchain-test") {
+		t.Errorf("audit logs do not mention fullchain-test pod")
+	}
+	if !strings.Contains(logs, `"scheduled"`) {
+		t.Errorf("audit logs do not contain a 'scheduled' event")
+	}
+
+	// Verify audit JSON is parseable by compliance.ReadEntries.
+	entries, warnings := parseAuditLogs(t, logs)
+	if len(entries) == 0 {
+		t.Fatal("compliance.ReadEntries returned 0 entries from scheduler logs")
+	}
+	// Check that at least one entry is for our pod.
+	found := false
+	for _, e := range entries {
+		if e.Pod.Name == "fullchain-test" && e.Event == "scheduled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no 'scheduled' audit entry found for fullchain-test (total entries: %d, warnings: %d)", len(entries), len(warnings))
+	}
+}
+
+// TestRequireTEEForHighPrivacy verifies the requireTEEForHigh policy path:
+// a high-privacy pod (without explicit confidential=required) is only scheduled
+// on TEE-capable nodes when the policy requires it.
+func TestRequireTEEForHighPrivacy(t *testing.T) {
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+  confidentialPolicy:
+    enabled: true
+    requireTEEForHigh: true
+    requireEncryptedDisk: true
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+
+	// Pod: privacy=high, region=us-west1 (no explicit confidential=required).
+	// With requireTEEForHigh=true, the confidential plugin should treat this
+	// as needing TEE. Only worker-0 has us-west1 + TEE + encrypted.
+	pod := makePod("tee-for-high-test", map[string]string{
+		"nexa.io/privacy": "high",
+		"nexa.io/org":     "alpha",
+		"nexa.io/region":  "us-west1",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	nodeName := waitForPodScheduled(t, testClient, ns, "tee-for-high-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	tee := node.Labels["nexa.io/tee"]
+	if tee == "" || tee == "none" {
+		t.Errorf("high-privacy pod with requireTEEForHigh scheduled on non-TEE node %s (tee=%q)", nodeName, tee)
+	}
+	t.Logf("requireTEEForHigh: pod scheduled on %s (tee=%s)", nodeName, tee)
+}
+
+// TestStrictOrgIsolation verifies that strictOrgIsolation prevents scheduling
+// on nodes used by a different org.
+func TestStrictOrgIsolation(t *testing.T) {
+	mt := &mainT{}
+	applyCRD(mt)
+	if mt.failed {
+		t.Fatalf("failed to install CRD: %s", mt.msg)
+	}
+
+	policyYAML := fmt.Sprintf(`apiVersion: nexa.io/v1alpha1
+kind: NexaPolicy
+metadata:
+  name: default
+  namespace: %s
+spec:
+  regionPolicy:
+    enabled: true
+  privacyPolicy:
+    enabled: true
+    defaultPrivacy: standard
+    strictOrgIsolation: true
+  confidentialPolicy:
+    enabled: false
+`, namespace)
+	applyNexaPolicy(t, policyYAML)
+	t.Cleanup(func() { deleteNexaPolicy(t) })
+	time.Sleep(5 * time.Second)
+
+	ns := createTestNamespace(t, testClient)
+
+	// Pod for org=alpha on us-west1. Worker-0 has org=alpha — should succeed.
+	pod1 := makePod("strict-org-alpha", map[string]string{
+		"nexa.io/org":     "alpha",
+		"nexa.io/region":  "us-west1",
+		"nexa.io/privacy": "standard",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod1, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+	nodeName := waitForPodScheduled(t, testClient, ns, "strict-org-alpha", 60*time.Second)
+	t.Logf("org=alpha pod scheduled on %s", nodeName)
+
+	// Pod for org=gamma on us-west1. No us-west1 node has org=gamma.
+	// Worker-0 has org=alpha (strict isolation blocks), worker-1 has no org labels.
+	// With strictOrgIsolation, a node with a different org is rejected.
+	// Worker-1 has no last-workload-org label — it should be acceptable (no conflict).
+	pod2 := makePod("strict-org-gamma", map[string]string{
+		"nexa.io/org":     "gamma",
+		"nexa.io/region":  "us-west1",
+		"nexa.io/privacy": "standard",
+	})
+	_, err = testClient.CoreV1().Pods(ns).Create(context.Background(), pod2, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	// Worker-1 (us-west1, no org label) should be the only viable option.
+	nodeName2 := waitForPodScheduled(t, testClient, ns, "strict-org-gamma", 60*time.Second)
+	node2, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName2, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName2, err)
+	}
+	nodeOrg := node2.Labels["nexa.io/last-workload-org"]
+	if nodeOrg != "" && nodeOrg != "gamma" {
+		t.Errorf("strict-org-gamma pod scheduled on node %s with org=%s — isolation violated", nodeName2, nodeOrg)
+	}
+	t.Logf("org=gamma pod scheduled on %s (org=%q)", nodeName2, nodeOrg)
+}
+
+// TestZoneFiltering verifies zone-level filtering independently from region.
+func TestZoneFiltering(t *testing.T) {
+	ns := createTestNamespace(t, testClient)
+
+	// Pod requesting specific zone. Worker-0 has us-west1-a, worker-1 has us-west1-b.
+	pod := makePod("zone-test", map[string]string{
+		"nexa.io/region": "us-west1",
+		"nexa.io/zone":   "us-west1-a",
+	})
+	_, err := testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+
+	nodeName := waitForPodScheduled(t, testClient, ns, "zone-test", 60*time.Second)
+	node, err := testClient.CoreV1().Nodes().Get(context.Background(), nodeName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", nodeName, err)
+	}
+	zone := node.Labels["nexa.io/zone"]
+	if zone != "us-west1-a" {
+		t.Errorf("zone-test pod scheduled on node %s with zone=%q, want us-west1-a", nodeName, zone)
+	}
+	t.Logf("zone-filtered pod scheduled on %s (zone=%s)", nodeName, zone)
+}

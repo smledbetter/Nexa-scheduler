@@ -13,6 +13,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"github.com/nexascheduler/nexa/pkg/metrics"
+	"github.com/nexascheduler/nexa/pkg/plugins"
 	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
@@ -27,8 +28,7 @@ const (
 
 // Plugin implements region and zone affinity filtering and scoring.
 type Plugin struct {
-	handle framework.Handle
-	policy policy.Provider
+	plugins.Base
 }
 
 var _ framework.FilterPlugin = (*Plugin)(nil)
@@ -43,21 +43,18 @@ func (p *Plugin) Name() string {
 // If the plugin is disabled by policy, all nodes pass.
 // Policy defaults are applied when pod labels are absent.
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
-	pol, err := p.policy.GetPolicy()
-	if err != nil {
-		metrics.RecordPolicyEval(Name, "error")
-		metrics.RecordFilter(Name, "error")
-		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
+	pol, status := p.GetPolicyOrFail()
+	if status != nil {
+		return status
 	}
-	metrics.RecordPolicyEval(Name, "success")
 
 	if !pol.Region.Enabled {
 		metrics.RecordFilter(Name, "accepted")
 		return nil
 	}
 
-	podRegion := podLabelWithDefault(pod, labelRegion, pol.Region.DefaultRegion)
-	podZone := podLabelWithDefault(pod, labelZone, pol.Region.DefaultZone)
+	podRegion := plugins.PodLabelWithDefault(pod, labelRegion, pol.Region.DefaultRegion)
+	podZone := plugins.PodLabelWithDefault(pod, labelZone, pol.Region.DefaultZone)
 
 	// No region/zone preference — accept all nodes.
 	if podRegion == "" && podZone == "" {
@@ -99,7 +96,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 //	Region match only:         framework.MaxNodeScore / 2 (50)
 //	No pod preference:         0
 func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
-	pol, err := p.policy.GetPolicy()
+	pol, err := p.Policy.GetPolicy()
 	if err != nil {
 		return 0, fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
 	}
@@ -108,8 +105,8 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 		return 0, nil
 	}
 
-	podRegion := podLabelWithDefault(pod, labelRegion, pol.Region.DefaultRegion)
-	podZone := podLabelWithDefault(pod, labelZone, pol.Region.DefaultZone)
+	podRegion := plugins.PodLabelWithDefault(pod, labelRegion, pol.Region.DefaultRegion)
+	podZone := plugins.PodLabelWithDefault(pod, labelZone, pol.Region.DefaultZone)
 
 	// No preference — neutral score.
 	if podRegion == "" && podZone == "" {
@@ -133,32 +130,17 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	return score, nil
 }
 
-// ScoreExtensions returns nil since scores are already in the 0-100 range.
-func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
-	return nil
-}
-
 // NewWithProvider creates a Region plugin with the given policy provider.
 // Used in tests and integration tests to inject a StaticProvider.
 func NewWithProvider(provider policy.Provider) *Plugin {
-	return &Plugin{policy: provider}
+	return &Plugin{Base: plugins.Base{Policy: provider, PluginName: Name}}
 }
 
 // New creates a new Region plugin with a composite policy provider (CRD + ConfigMap fallback).
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	provider, err := policy.NewCompositeProviderFromHandle(h)
+	base, err := plugins.NewBase(Name, h)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create policy provider: %w", err)
+		return nil, err
 	}
-	return &Plugin{handle: h, policy: provider}, nil
-}
-
-// podLabelWithDefault returns the pod's label value, or the default if absent/empty.
-func podLabelWithDefault(pod *v1.Pod, key, defaultVal string) string {
-	if pod.Labels != nil {
-		if v := pod.Labels[key]; v != "" {
-			return v
-		}
-	}
-	return defaultVal
+	return &Plugin{Base: base}, nil
 }

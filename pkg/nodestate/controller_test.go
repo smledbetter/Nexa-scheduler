@@ -3,6 +3,7 @@ package nodestate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -539,4 +541,186 @@ func TestControllerRun(t *testing.T) {
 			t.Errorf("expected error containing 'failed to sync', got %q", err.Error())
 		}
 	})
+}
+
+func TestReconcileNode_StartTimeFallback(t *testing.T) {
+	// Pod is Succeeded but has no ContainerStatuses — podTerminationTime should
+	// fall back to pod.Status.StartTime.
+	startTime := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-no-containers",
+			Namespace: "default",
+			Labels:    map[string]string{LabelOrg: "acme"},
+		},
+		Spec: v1.PodSpec{
+			NodeName: "node1",
+		},
+		Status: v1.PodStatus{
+			Phase:     v1.PodSucceeded,
+			StartTime: &metav1.Time{Time: startTime},
+			// No ContainerStatuses — forces the StartTime fallback path.
+		},
+	}
+	node := makeTestNode("node1", map[string]string{})
+
+	client := fake.NewSimpleClientset(node, pod)
+	factory := informers.NewSharedInformerFactory(client, 0)
+	controller := NewController(client, factory)
+
+	stopCh := make(chan struct{})
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
+	err := controller.reconcileNode(context.Background(), "node1")
+	close(stopCh)
+	if err != nil {
+		t.Fatalf("reconcileNode returned error: %v", err)
+	}
+
+	// Should have patched last-workload-org to "acme" using StartTime for ordering.
+	var patched bool
+	for _, a := range client.Actions() {
+		if a.GetVerb() == "patch" && a.GetResource().Resource == "nodes" {
+			patched = true
+			patchAction := a.(patchGetter)
+			var patch map[string]interface{}
+			if err := json.Unmarshal(patchAction.GetPatch(), &patch); err != nil {
+				t.Fatalf("unmarshal patch: %v", err)
+			}
+			metadata := patch["metadata"].(map[string]interface{})
+			labels := metadata["labels"].(map[string]interface{})
+			if labels[LabelLastWorkloadOrg] != "acme" {
+				t.Errorf("expected last-workload-org=acme, got %v", labels[LabelLastWorkloadOrg])
+			}
+		}
+	}
+	if !patched {
+		t.Fatal("expected a patch action for org label update")
+	}
+}
+
+func TestEventHandlers_DeleteTombstone(t *testing.T) {
+	// When the informer misses a delete event, it delivers a
+	// cache.DeletedFinalStateUnknown tombstone. Verify the handler extracts the pod.
+	client := fake.NewSimpleClientset()
+	factory := informers.NewSharedInformerFactory(client, 0)
+	controller := NewController(client, factory)
+
+	pod := makeTestPod("tombstone-pod", "node-from-tombstone", "acme", v1.PodSucceeded, time.Now())
+	tombstone := cache.DeletedFinalStateUnknown{
+		Key: "default/tombstone-pod",
+		Obj: pod,
+	}
+
+	controller.handlePodDelete(tombstone)
+
+	items := drainQueue(controller)
+	found := false
+	for _, item := range items {
+		if item == "node-from-tombstone" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'node-from-tombstone' to be enqueued from tombstone delete, got %v", items)
+	}
+}
+
+func TestEventHandlers_DeleteTombstoneNonPod(t *testing.T) {
+	// A tombstone wrapping a non-pod object should be silently ignored.
+	client := fake.NewSimpleClientset()
+	factory := informers.NewSharedInformerFactory(client, 0)
+	controller := NewController(client, factory)
+
+	tombstone := cache.DeletedFinalStateUnknown{
+		Key: "default/not-a-pod",
+		Obj: "not-a-pod-object",
+	}
+
+	controller.handlePodDelete(tombstone)
+
+	items := drainQueue(controller)
+	if len(items) != 0 {
+		t.Errorf("expected no items enqueued for non-pod tombstone, got %v", items)
+	}
+}
+
+func TestReconcileNode_PatchError(t *testing.T) {
+	// Verify that reconcileNode returns an error when the API patch fails.
+	node := makeTestNode("node1", map[string]string{})
+	pod := makeTestPod("pod1", "node1", "acme", v1.PodSucceeded, time.Now())
+
+	client := fake.NewSimpleClientset(node, pod)
+	// Inject a reactor that fails all node patches.
+	client.PrependReactor("patch", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("simulated API error")
+	})
+
+	factory := informers.NewSharedInformerFactory(client, 0)
+	controller := NewController(client, factory)
+
+	stopCh := make(chan struct{})
+	factory.Start(stopCh)
+	factory.WaitForCacheSync(stopCh)
+
+	err := controller.reconcileNode(context.Background(), "node1")
+	close(stopCh)
+
+	if err == nil {
+		t.Fatal("expected error from reconcileNode when patch fails")
+	}
+	if !strings.Contains(err.Error(), "simulated API error") {
+		t.Errorf("expected error to contain 'simulated API error', got %q", err.Error())
+	}
+}
+
+func TestControllerRun_MultipleWorkers(t *testing.T) {
+	// Verify multiple workers can process items concurrently without panics or races.
+	node1 := makeTestNode("node1", map[string]string{})
+	node2 := makeTestNode("node2", map[string]string{})
+	node3 := makeTestNode("node3", map[string]string{})
+	pod1 := makeTestPod("pod1", "node1", "alpha", v1.PodSucceeded, time.Now())
+	pod2 := makeTestPod("pod2", "node2", "beta", v1.PodSucceeded, time.Now())
+	pod3 := makeTestPod("pod3", "node3", "gamma", v1.PodSucceeded, time.Now())
+
+	client := fake.NewSimpleClientset(node1, node2, node3, pod1, pod2, pod3)
+	factory := informers.NewSharedInformerFactory(client, 0)
+	controller := NewController(client, factory)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	factory.Start(ctx.Done())
+	factory.WaitForCacheSync(ctx.Done())
+
+	// Add items before starting workers.
+	controller.queue.Add("node1")
+	controller.queue.Add("node2")
+	controller.queue.Add("node3")
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- controller.Run(ctx, 2) // 2 concurrent workers
+	}()
+
+	// Wait for items to be processed (all 3 nodes should be patched).
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Run returned unexpected error: %v", err)
+	}
+
+	// All 3 nodes should have been patched.
+	var patchCount int
+	for _, a := range client.Actions() {
+		if a.GetVerb() == "patch" && a.GetResource().Resource == "nodes" {
+			patchCount++
+		}
+	}
+	if patchCount < 3 {
+		t.Errorf("expected at least 3 node patches from 2 workers, got %d", patchCount)
+	}
 }

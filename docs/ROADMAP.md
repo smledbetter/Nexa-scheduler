@@ -2,16 +2,16 @@
 
 ## Current State
 
-- **Status:** Milestone 3 complete (confidential compute + node cooldown shipped). All 3 milestones done.
-- **Tests:** 111 top-level (+ 18 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~92% overall (100% metrics, 87.1% audit, 94.4% privacy, 89.1% region, 95.7% policy, 86.0% nodestate, 100% testing, 93.2% webhook, 92.8% compliance, 91.3% confidential)
-- **LOC:** ~11200 (application + deployment, excluding go.sum/config)
+- **Status:** All 3 milestones done + hardening complete. Shared plugin base extracted, nodestate coverage recovered, 4 E2E smoke tests added.
+- **Tests:** 121 top-level (+ 22 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~93% overall (100% metrics, 87.1% audit, 93.8% privacy, 89.4% region, 95.7% policy, 94.6% nodestate, 100% testing, 93.2% webhook, 92.8% compliance, 91.9% confidential, 78.9% shared base)
+- **LOC:** ~11800 (application + deployment, excluding go.sum/config)
 - **Binaries:** 4 (scheduler, node controller, webhook, compliance CLI)
 - **Helm subcharts:** 3 (nexa-scheduler, nexa-node-controller, nexa-webhook)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Docs:** Quickstart, architecture, threat model (label spoofing + TEE trust + GPU VRAM gap mitigated/documented), integration guide with Kueue + immutable audit storage sections (docs/)
-- **Sprints completed:** 16 (Sprint 0–15), across 15 phases
+- **Docs:** Quickstart, architecture, threat model (label spoofing + TEE trust + GPU VRAM gap mitigated/documented), integration guide with Kueue + immutable audit storage sections (docs/), PRD rewritten with sharpened UVP
+- **Sprints completed:** 17 (Sprint 0–16), across 16 phases
 - **Gates:** All gates passing (build, lint, test, coverage, helm lint x3, helm template, smoke vet)
 
 ---
@@ -318,6 +318,69 @@ These refine or override the PRD where the original recommendations were impreci
 - Confidential Containers (CoCo/Kata) add overhead. Policy should make confidential placement opt-in, not default.
 
 **Estimated LOC:** 500–750 (actual: 1033 — includes 13 unit tests, 2 smoke tests, and threat model addendum)
+
+---
+
+### Phase 15: Hardening + E2E Smoke Tests — [Sprint 16] ✅
+
+**Goal:** Reduce plugin duplication across region/privacy/confidential (3 instances of identical boilerplate) and add smoke tests that prove the full end-to-end workflow: webhook → scheduling → audit → compliance report.
+
+**Deliverables:**
+
+*Plugin base extraction:*
+- `pkg/plugins/base.go`: Shared `Base` struct (Handle, Policy, PluginName), `NewBase` constructor, `GetPolicyOrFail` method, `PodLabel`/`PodLabelWithDefault` helpers, `ScoreExtensions` default
+- Refactor region, privacy, confidential plugins to embed `Base` — all existing tests pass without modification
+- Net LOC reduction in plugin packages
+
+*Nodestate coverage recovery (86% → 92%+):*
+- `podTerminationTime` StartTime fallback test
+- `DeleteFunc` tombstone path test
+- `patchNodeLabels` API error path test
+- Multiple concurrent workers test
+
+*E2E smoke tests:*
+- `TestE2EFullChain`: webhook admits → scheduler places → audit log emitted → compliance reader validates format
+- `TestRequireTEEForHighPrivacy`: privacy=high pods routed to TEE nodes via policy
+- `TestStrictOrgIsolation`: standard-privacy pods rejected from wrong-org nodes
+- `TestZoneFiltering`: zone-level affinity independently tested
+
+**Estimated LOC:** 400–600 (net neutral — refactor removes ~200, tests add ~350)
+
+---
+
+### Phase 16: Remote Attestation — [Sprint 17]
+
+**Goal:** Close the TEE self-reporting trust gap. Add remote attestation verification so `nexa.io/confidential=required` is backed by cryptographic proof, not just a node label.
+
+**Architecture:** New `pkg/attestation/` package with `Attester` interface. HTTP client implementation for Intel Trust Authority (or similar REST API). Attestation controller extends the existing node state controller binary — periodic verification patches `nexa.io/tee-attested`, `nexa.io/tee-attestation-time`, `nexa.io/tee-trust-anchor` labels. Confidential plugin reads these labels at filter time (same label-mediated pattern as wipe-timestamp cooldown).
+
+**Deliverables:**
+
+*Attestation package:*
+- `pkg/attestation/attester.go`: `Attester` interface + `Result` struct
+- `pkg/attestation/http_attester.go`: HTTP client to attestation REST API (no new Go dependencies — `net/http` only)
+- `pkg/attestation/labels.go`: Label constants for attestation state
+
+*Policy + plugin extensions:*
+- `ConfidentialPolicy`: add `RequireAttestation`, `AttestationMaxAgeHours`, `AttestationTrustAnchor` fields
+- Confidential plugin Filter: Check 4 (attestation required), Check 4b (freshness), Check 4c (trust anchor match)
+- `nowFunc` added to confidential plugin (same pattern as privacy) for deterministic freshness tests
+
+*Attestation controller:*
+- `pkg/nodestate/attestation_controller.go`: periodic loop — list TEE nodes, verify, patch labels
+- `cmd/controller/main.go`: `--enable-attestation`, `--attestation-url`, `--attestation-interval` flags
+- Fail-closed: any verification error → `tee-attested=false`
+
+*Documentation:*
+- Threat model: threat #8 updated from "Accepted risk" to "Mitigated when RequireAttestation=true"
+- New threat: attestation service unavailability (availability impact, not security — fail-closed)
+
+**Known limitations:**
+- Sprint 17 implements HTTP attestation client only. Local device attestation (`/dev/tdx-guest`) deferred.
+- Attestation service trustworthiness is operator responsibility (out of scope).
+- GPU VRAM attestation remains a hardware gap.
+
+**Estimated LOC:** 600–900
 
 ---
 

@@ -13,6 +13,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"github.com/nexascheduler/nexa/pkg/metrics"
+	"github.com/nexascheduler/nexa/pkg/plugins"
 	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
@@ -35,8 +36,7 @@ const (
 
 // Plugin implements confidential compute filtering and scoring based on TEE capabilities.
 type Plugin struct {
-	handle framework.Handle
-	policy policy.Provider
+	plugins.Base
 }
 
 var _ framework.FilterPlugin = (*Plugin)(nil)
@@ -53,13 +53,10 @@ func (p *Plugin) Name() string {
 //  3. If policy.RequireRuntimeClass is set, the pod must have a matching runtimeClassName.
 //  4. If policy.RequireTEEForHigh, privacy=high pods also require TEE nodes.
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
-	pol, err := p.policy.GetPolicy()
-	if err != nil {
-		metrics.RecordPolicyEval(Name, "error")
-		metrics.RecordFilter(Name, "error")
-		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
+	pol, status := p.GetPolicyOrFail()
+	if status != nil {
+		return status
 	}
-	metrics.RecordPolicyEval(Name, "success")
 
 	if !pol.Confidential.Enabled {
 		metrics.RecordFilter(Name, "accepted")
@@ -67,8 +64,8 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	}
 
 	node := nodeInfo.Node()
-	isConfidentialPod := podLabel(pod, labelConfidential) == confidentialRequired
-	isHighPrivacy := podLabel(pod, labelPrivacy) == privacyHigh
+	isConfidentialPod := plugins.PodLabel(pod, labelConfidential) == confidentialRequired
+	isHighPrivacy := plugins.PodLabel(pod, labelPrivacy) == privacyHigh
 
 	// Determine if this pod needs TEE enforcement.
 	needsTEE := isConfidentialPod || (isHighPrivacy && pol.Confidential.RequireTEEForHigh)
@@ -118,7 +115,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 //	Any TEE (type mismatch): framework.MaxNodeScore / 2 (50)
 //	No TEE or no preference: 0
 func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
-	pol, err := p.policy.GetPolicy()
+	pol, err := p.Policy.GetPolicy()
 	if err != nil {
 		return 0, fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
 	}
@@ -127,8 +124,8 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 		return 0, nil
 	}
 
-	isConfidentialPod := podLabel(pod, labelConfidential) == confidentialRequired
-	isHighPrivacy := podLabel(pod, labelPrivacy) == privacyHigh
+	isConfidentialPod := plugins.PodLabel(pod, labelConfidential) == confidentialRequired
+	isHighPrivacy := plugins.PodLabel(pod, labelPrivacy) == privacyHigh
 	needsScoring := isConfidentialPod || (isHighPrivacy && pol.Confidential.RequireTEEForHigh)
 	if !needsScoring {
 		return 0, nil
@@ -142,7 +139,7 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	}
 
 	// Pod specifies a preferred TEE type — exact match scores highest.
-	wantTEE := podLabel(pod, labelTEEType)
+	wantTEE := plugins.PodLabel(pod, labelTEEType)
 	if wantTEE == "" {
 		wantTEE = pol.Confidential.DefaultTEEType
 	}
@@ -164,32 +161,19 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	return framework.MaxNodeScore, nil
 }
 
-// ScoreExtensions returns nil since scores are already in the 0-100 range.
-func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
-	return nil
-}
-
 // NewWithProvider creates a Confidential plugin with the given policy provider.
 // Used in tests to inject a StaticProvider.
 func NewWithProvider(provider policy.Provider) *Plugin {
-	return &Plugin{policy: provider}
+	return &Plugin{Base: plugins.Base{Policy: provider, PluginName: Name}}
 }
 
 // New creates a new Confidential plugin with a composite policy provider (CRD + ConfigMap fallback).
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	provider, err := policy.NewCompositeProviderFromHandle(h)
+	base, err := plugins.NewBase(Name, h)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create policy provider: %w", err)
+		return nil, err
 	}
-	return &Plugin{handle: h, policy: provider}, nil
-}
-
-// podLabel returns the value of a label on a pod, or "" if absent.
-func podLabel(pod *v1.Pod, key string) string {
-	if pod.Labels == nil {
-		return ""
-	}
-	return pod.Labels[key]
+	return &Plugin{Base: base}, nil
 }
 
 // podRuntimeClass returns the pod's runtimeClassName, or "" if not set.

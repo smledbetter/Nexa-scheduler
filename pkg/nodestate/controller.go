@@ -55,25 +55,29 @@ func NewController(kubeClient kubernetes.Interface, factory informers.SharedInfo
 				c.queue.Add(newPod.Spec.NodeName)
 			}
 		},
-		DeleteFunc: func(obj interface{}) {
-			pod, ok := obj.(*v1.Pod)
-			if !ok {
-				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-				if !ok {
-					return
-				}
-				pod, ok = tombstone.Obj.(*v1.Pod)
-				if !ok {
-					return
-				}
-			}
-			if pod.Spec.NodeName != "" {
-				c.queue.Add(pod.Spec.NodeName)
-			}
-		},
+		DeleteFunc: c.handlePodDelete,
 	})
 
 	return c
+}
+
+// handlePodDelete extracts a pod from a raw delete event (which may be a
+// tombstone) and enqueues the pod's node for reconciliation.
+func (c *Controller) handlePodDelete(obj interface{}) {
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		pod, ok = tombstone.Obj.(*v1.Pod)
+		if !ok {
+			return
+		}
+	}
+	if pod.Spec.NodeName != "" {
+		c.queue.Add(pod.Spec.NodeName)
+	}
 }
 
 // Run starts the controller workers and blocks until the context is cancelled.

@@ -22,6 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/nexascheduler/nexa/pkg/compliance"
+	"github.com/nexascheduler/nexa/pkg/plugins/audit"
 )
 
 const (
@@ -428,6 +431,14 @@ func schedulerLogs(t *testing.T, client kubernetes.Interface) string {
 	}
 	out := runCmd(t, "kubectl", "logs", "-n", namespace, pods.Items[0].Name)
 	return out
+}
+
+// parseAuditLogs extracts audit DecisionEntry records from scheduler log output.
+// Scheduler logs contain both klog lines and JSON audit lines; ReadEntries skips non-JSON.
+func parseAuditLogs(t *testing.T, logs string) ([]audit.DecisionEntry, []compliance.ParseWarning) {
+	t.Helper()
+	r := strings.NewReader(logs)
+	return compliance.ReadEntries(r)
 }
 
 // --- Kueue integration helpers ---

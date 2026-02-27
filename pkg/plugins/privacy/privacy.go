@@ -14,6 +14,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"github.com/nexascheduler/nexa/pkg/metrics"
+	"github.com/nexascheduler/nexa/pkg/plugins"
 	"github.com/nexascheduler/nexa/pkg/policy"
 )
 
@@ -34,8 +35,7 @@ const (
 
 // Plugin implements privacy-aware filtering and scoring based on node cleanliness.
 type Plugin struct {
-	handle  framework.Handle
-	policy  policy.Provider
+	plugins.Base
 	nowFunc func() time.Time
 }
 
@@ -54,24 +54,21 @@ func (p *Plugin) Name() string {
 //
 // Standard-privacy and unlabeled pods pass all nodes.
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
-	pol, err := p.policy.GetPolicy()
-	if err != nil {
-		metrics.RecordPolicyEval(Name, "error")
-		metrics.RecordFilter(Name, "error")
-		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
+	pol, status := p.GetPolicyOrFail()
+	if status != nil {
+		return status
 	}
-	metrics.RecordPolicyEval(Name, "success")
 
 	if !pol.Privacy.Enabled {
 		metrics.RecordFilter(Name, "accepted")
 		return nil
 	}
 
-	privacyLevel := podLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
+	privacyLevel := plugins.PodLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
 
 	// Strict org isolation applies org checks to ALL pods, not just high-privacy.
 	if pol.Privacy.StrictOrgIsolation {
-		podOrg := podLabel(pod, labelOrg)
+		podOrg := plugins.PodLabel(pod, labelOrg)
 		if podOrg != "" {
 			node := nodeInfo.Node()
 			lastOrg := node.Labels[labelLastWorkload]
@@ -85,7 +82,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 			}
 			for _, pi := range nodeInfo.GetPods() {
 				existingPod := pi.GetPod()
-				existingOrg := podLabel(existingPod, labelOrg)
+				existingOrg := plugins.PodLabel(existingPod, labelOrg)
 				if existingOrg != "" && existingOrg != podOrg {
 					recordIsolationViolation("strict_org")
 					metrics.RecordFilter(Name, "rejected")
@@ -146,7 +143,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 		}
 	}
 
-	podOrg := podLabel(pod, labelOrg)
+	podOrg := plugins.PodLabel(pod, labelOrg)
 	if podOrg == "" {
 		metrics.RecordFilter(Name, "accepted")
 		return nil
@@ -166,7 +163,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	// Check 3: No running pods from a different org.
 	for _, pi := range nodeInfo.GetPods() {
 		existingPod := pi.GetPod()
-		existingOrg := podLabel(existingPod, labelOrg)
+		existingOrg := plugins.PodLabel(existingPod, labelOrg)
 		if existingOrg != "" && existingOrg != podOrg {
 			recordIsolationViolation("cross_org")
 			metrics.RecordFilter(Name, "rejected")
@@ -187,7 +184,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 //	Not wiped, same org:                framework.MaxNodeScore / 2 (50)
 //	No privacy label on pod:            0
 func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) (int64, *fwk.Status) {
-	pol, err := p.policy.GetPolicy()
+	pol, err := p.Policy.GetPolicy()
 	if err != nil {
 		return 0, fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
 	}
@@ -196,7 +193,7 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 		return 0, nil
 	}
 
-	privacyLevel := podLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
+	privacyLevel := plugins.PodLabelWithDefault(pod, labelPrivacy, pol.Privacy.DefaultPrivacy)
 	if privacyLevel != privacyHigh {
 		return 0, nil
 	}
@@ -210,7 +207,7 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	}
 
 	// Not wiped — partial score if same org.
-	podOrg := podLabel(pod, labelOrg)
+	podOrg := plugins.PodLabel(pod, labelOrg)
 	lastOrg := node.Labels[labelLastWorkload]
 	if podOrg != "" && (lastOrg == "" || lastOrg == podOrg) {
 		metrics.RecordScore(Name, float64(framework.MaxNodeScore/2))
@@ -221,11 +218,6 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	return 0, nil
 }
 
-// ScoreExtensions returns nil since scores are already in the 0-100 range.
-func (p *Plugin) ScoreExtensions() framework.ScoreExtensions {
-	return nil
-}
-
 // NewWithProvider creates a Privacy plugin with the given policy provider.
 // Used in tests and integration tests to inject a StaticProvider.
 // An optional nowFunc overrides time.Now for deterministic cooldown tests.
@@ -234,16 +226,16 @@ func NewWithProvider(provider policy.Provider, nowFunc ...func() time.Time) *Plu
 	if len(nowFunc) > 0 && nowFunc[0] != nil {
 		nf = nowFunc[0]
 	}
-	return &Plugin{policy: provider, nowFunc: nf}
+	return &Plugin{Base: plugins.Base{Policy: provider, PluginName: Name}, nowFunc: nf}
 }
 
 // New creates a new Privacy plugin with a composite policy provider (CRD + ConfigMap fallback).
 func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	provider, err := policy.NewCompositeProviderFromHandle(h)
+	base, err := plugins.NewBase(Name, h)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create policy provider: %w", err)
+		return nil, err
 	}
-	return &Plugin{handle: h, policy: provider, nowFunc: time.Now}, nil
+	return &Plugin{Base: base, nowFunc: time.Now}, nil
 }
 
 // recordIsolationViolation increments the isolation violation counter if metrics are registered.
@@ -251,22 +243,4 @@ func recordIsolationViolation(reason string) {
 	if metrics.IsolationViolations != nil {
 		metrics.IsolationViolations.WithLabelValues(reason).Inc()
 	}
-}
-
-// podLabel returns the value of a label on a pod, or "" if absent.
-func podLabel(pod *v1.Pod, key string) string {
-	if pod.Labels == nil {
-		return ""
-	}
-	return pod.Labels[key]
-}
-
-// podLabelWithDefault returns the pod's label value, or the default if absent/empty.
-func podLabelWithDefault(pod *v1.Pod, key, defaultVal string) string {
-	if pod.Labels != nil {
-		if v := pod.Labels[key]; v != "" {
-			return v
-		}
-	}
-	return defaultVal
 }

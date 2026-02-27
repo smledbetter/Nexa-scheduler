@@ -118,7 +118,7 @@ func TestFilter(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{policy: enabledPolicy()}
+	p := NewWithProvider(enabledPolicy())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -145,7 +145,7 @@ func TestFilter(t *testing.T) {
 }
 
 func TestFilterDisabledPlugin(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}}}
+	p := NewWithProvider(&policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}})
 	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/region": "us-west1"})
 	node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "eu-west1"})
 	nodeInfo := nt.MakeNodeInfo(node)
@@ -161,7 +161,7 @@ func TestFilterDefaultRegion(t *testing.T) {
 		Enabled:       true,
 		DefaultRegion: "us-west1",
 	}}}
-	p := &Plugin{policy: provider}
+	p := NewWithProvider(provider)
 
 	t.Run("unlabeled pod uses default region — rejects mismatched node", func(t *testing.T) {
 		pod := nt.MakePod("test-pod", nil)
@@ -198,7 +198,7 @@ func TestFilterDefaultRegion(t *testing.T) {
 }
 
 func TestFilterPolicyError(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{Err: errors.New("config unavailable")}}
+	p := NewWithProvider(&policy.StaticProvider{Err: errors.New("config unavailable")})
 	pod := nt.MakePod("test-pod", nil)
 	node := nt.MakeNode("test-node", nil)
 	nodeInfo := nt.MakeNodeInfo(node)
@@ -260,7 +260,7 @@ func TestScore(t *testing.T) {
 		},
 	}
 
-	p := &Plugin{policy: enabledPolicy()}
+	p := NewWithProvider(enabledPolicy())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			pod := nt.MakePod("test-pod", tt.podLabels)
@@ -279,7 +279,7 @@ func TestScore(t *testing.T) {
 }
 
 func TestScoreDisabledPlugin(t *testing.T) {
-	p := &Plugin{policy: &policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}}}
+	p := NewWithProvider(&policy.StaticProvider{P: &policy.Policy{Region: policy.RegionPolicy{Enabled: false}}})
 	pod := nt.MakePod("test-pod", map[string]string{"nexa.io/region": "us-west1"})
 	node := nt.MakeNode("test-node", map[string]string{"nexa.io/region": "us-west1"})
 	nodeInfo := nt.MakeNodeInfo(node)
