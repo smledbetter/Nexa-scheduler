@@ -69,3 +69,24 @@ func Register(reg prometheus.Registerer) {
 		PolicyEvaluations,
 	)
 }
+
+// RecordFilter increments the filter result counter. Safe to call before Register.
+func RecordFilter(plugin, result string) {
+	if FilterResults != nil {
+		FilterResults.WithLabelValues(plugin, result).Inc()
+	}
+}
+
+// RecordPolicyEval increments the policy evaluation counter. Safe to call before Register.
+func RecordPolicyEval(plugin, result string) {
+	if PolicyEvaluations != nil {
+		PolicyEvaluations.WithLabelValues(plugin, result).Inc()
+	}
+}
+
+// RecordScore observes a score value in the distribution histogram. Safe to call before Register.
+func RecordScore(plugin string, score float64) {
+	if ScoreDistribution != nil {
+		ScoreDistribution.WithLabelValues(plugin).Observe(score)
+	}
+}

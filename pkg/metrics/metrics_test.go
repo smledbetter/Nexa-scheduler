@@ -161,6 +161,61 @@ func TestScoreDistributionHistogram(t *testing.T) {
 	}
 }
 
+func TestRecordFilterHelper(t *testing.T) {
+	t.Run("increments counter when registered", func(t *testing.T) {
+		_ = freshRegistry(t)
+		RecordFilter("NexaRegion", "accepted")
+		RecordFilter("NexaRegion", "accepted")
+		got := counterValue(t, FilterResults, "NexaRegion", "accepted")
+		if got != 2 {
+			t.Errorf("RecordFilter count = %v, want 2", got)
+		}
+	})
+
+	t.Run("nil-safe before Register", func(t *testing.T) {
+		old := FilterResults
+		FilterResults = nil
+		defer func() { FilterResults = old }()
+		RecordFilter("NexaRegion", "accepted") // must not panic
+	})
+}
+
+func TestRecordPolicyEvalHelper(t *testing.T) {
+	t.Run("increments counter when registered", func(t *testing.T) {
+		_ = freshRegistry(t)
+		RecordPolicyEval("NexaPrivacy", "success")
+		got := counterValue(t, PolicyEvaluations, "NexaPrivacy", "success")
+		if got != 1 {
+			t.Errorf("RecordPolicyEval count = %v, want 1", got)
+		}
+	})
+
+	t.Run("nil-safe before Register", func(t *testing.T) {
+		old := PolicyEvaluations
+		PolicyEvaluations = nil
+		defer func() { PolicyEvaluations = old }()
+		RecordPolicyEval("NexaPrivacy", "success") // must not panic
+	})
+}
+
+func TestRecordScoreHelper(t *testing.T) {
+	t.Run("observes value when registered", func(t *testing.T) {
+		_ = freshRegistry(t)
+		RecordScore("NexaRegion", 75.0)
+		count := histogramCount(t, ScoreDistribution, "NexaRegion")
+		if count != 1 {
+			t.Errorf("RecordScore histogram count = %d, want 1", count)
+		}
+	})
+
+	t.Run("nil-safe before Register", func(t *testing.T) {
+		old := ScoreDistribution
+		ScoreDistribution = nil
+		defer func() { ScoreDistribution = old }()
+		RecordScore("NexaRegion", 50.0) // must not panic
+	})
+}
+
 func TestRegistryIsolation(t *testing.T) {
 	// Register with two separate registries to verify no cross-pollution.
 	reg1 := prometheus.NewRegistry()

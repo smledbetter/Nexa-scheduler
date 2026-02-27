@@ -2,13 +2,13 @@
 
 ## Current State
 
-- **Tests:** 55 top-level (144 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`, all passing)
-- **Coverage:** ~90% overall (100% metrics, 90.0% audit, 91.3% privacy, 88.1% region, 72.2% policy, 100% testing)
-- **LOC:** ~5050 (application + deployment, excluding go.sum/config)
+- **Tests:** 59 top-level (154 subtests in regular suite, + 7 smoke tests behind `//go:build smoke`, all passing)
+- **Coverage:** ~95% overall (100% metrics, 90.0% audit, 94.2% privacy, 92.5% region, 100% policy, 100% testing)
+- **LOC:** ~5200 (application + deployment, excluding go.sum/config)
 - **Go installed:** Yes — Go 1.26.0, golangci-lint v1.64.8
 - **Helm installed:** Yes — via Homebrew
-- **Milestone status:** Sprint 7 (Phase 7) complete (amended). Sprint 8 next.
-- **Gates:** All 4 Go gates passing (build, lint, test, coverage) + helm lint + helm template + go vet smoke + make smoke (7/7)
+- **Milestone status:** Sprint 8 (Phase 8) complete. Sprint 9 next.
+- **Gates:** All 7 gates passing (build, lint, test, coverage, helm lint, helm template, smoke vet)
 
 ---
 
@@ -20,7 +20,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 2. **Native Go rules engine** — no OPA for MVP. The policies (region match, node cleanliness, privacy level) are simple predicates that map directly to Filter/Score plugins. OPA adds Rego complexity and a dependency for what amounts to 20 lines of Go per policy. OPA integration can be added later if policy complexity demands it.
 
-3. **ConfigMap first, CRD later** — ConfigMap for policy configuration in MVP. CRDs require kubebuilder scaffolding and code generation. Phase 3 delivers ConfigMap; Phase 8 upgrades to CRD once the policy model is proven.
+3. **ConfigMap first, CRD later** — ConfigMap for policy configuration in MVP. CRDs require kubebuilder scaffolding and code generation. Phase 3 delivers ConfigMap; Phase 10 upgrades to CRD once the policy model is proven.
 
 4. **Labels, not taints, for node state** — The PRD suggests taints/tolerations for node cleanliness. Labels and annotations are better: they let the scheduler make nuanced decisions (e.g., score clean nodes higher) rather than binary taint-based exclusion. Labels: `nexa.io/wiped`, `nexa.io/last-workload-org`, `nexa.io/wipe-on-complete`.
 
@@ -144,23 +144,34 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 8: Documentation & Hardening — [Sprint 8]
+### Phase 8: Hardening — [Sprint 8] ✅
 
-**Goal:** Production-ready documentation and edge case handling.
+**Goal:** Close deferred test coverage gaps and eliminate code duplication identified in sprint retrospectives.
+
+**Deliverables:**
+- Fake clientset tests for ConfigMapProvider (covering `NewConfigMapProvider()` and `GetPolicy()` paths — deferred since Sprint 3)
+- Extract duplicate metric helpers (`recordFilter`, `recordPolicyEval`, `recordScore`) from region.go and privacy.go into `pkg/metrics/` as exported functions
+- Tests for extracted metric helpers (nil-safe, increment verification)
+
+**Estimated LOC:** 200–350
+
+---
+
+### Phase 9: Documentation — [Sprint 9]
+
+**Goal:** Production-ready documentation for operators and contributors.
 
 **Deliverables:**
 - Quickstart guide (Kind cluster + Helm install + sample pod)
 - Architecture document with diagrams
 - Threat model (attack surfaces, mitigations)
 - Integration guide (existing schedulers, monitoring, CI/CD)
-- Edge case hardening: scheduler crash recovery, ConfigMap deletion handling, node label race conditions
-- Fake clientset tests for ConfigMapProvider (covering New() and Get() paths that require a running API server)
 
-**Estimated LOC:** 500–1000
+**Estimated LOC:** 400–700 (markdown/docs)
 
 ---
 
-### Phase 9: CRD Policy & Node State Controller — [Sprint 9]
+### Phase 10: CRD Policy & Node State Controller — [Sprint 10]
 
 **Goal:** Replace ConfigMap policies with a `NexaPolicy` CRD. Introduce the Node State Controller as a separate binary that manages node labels.
 
@@ -176,7 +187,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 ---
 
-### Phase 10: GPU & Confidential Compute Scheduling — [Sprint 10] (optional)
+### Phase 11: GPU & Confidential Compute Scheduling — [Sprint 11] (optional)
 
 **Goal:** Schedule GPU/accelerator workloads with topology awareness, gang-scheduling, and priority-based preemption — and gate sensitive AI workloads on confidential computing capabilities. Pods requesting GPUs are placed on nodes that minimize fragmentation, respect NUMA/NVLink topology, and can be co-scheduled as groups. Pods requiring confidential compute are placed only on TEE-capable nodes with verified encryption support.
 
@@ -197,7 +208,7 @@ These refine or override the PRD where the original recommendations were impreci
 
 *Shared:*
 - Unit tests: topology scoring (contiguous vs. fragmented), gang-scheduling (partial group, full group, timeout), preemption priority ordering, accelerator type filtering, TEE label filtering, confidential+GPU policy composition, runtimeClass enforcement
-- Threat model addendum (cross-ref Phase 8): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
+- Threat model addendum (cross-ref Phase 9): document GPU VRAM encryption gap — GPU memory is not protected by CPU TEEs, data in VRAM and in transit over PCIe is exposed to physical/firmware-level attacks; recommend processing sensitive data in TEE and minimizing GPU exposure for highest-privacy workloads
 
 **Known limitations (to document, not solve):**
 - Node labels are self-reported. Without remote attestation, `nexa.io/confidential=true` is a policy signal, not a cryptographic guarantee. Attestation integration is a future phase.

@@ -53,14 +53,14 @@ func (p *Plugin) Name() string {
 func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInfo fwk.NodeInfo) *fwk.Status {
 	pol, err := p.policy.GetPolicy()
 	if err != nil {
-		recordPolicyEval(Name, "error")
-		recordFilter(Name, "error")
+		metrics.RecordPolicyEval(Name, "error")
+		metrics.RecordFilter(Name, "error")
 		return fwk.NewStatus(fwk.Error, fmt.Sprintf("failed to read policy: %v", err))
 	}
-	recordPolicyEval(Name, "success")
+	metrics.RecordPolicyEval(Name, "success")
 
 	if !pol.Privacy.Enabled {
-		recordFilter(Name, "accepted")
+		metrics.RecordFilter(Name, "accepted")
 		return nil
 	}
 
@@ -74,7 +74,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 			lastOrg := node.Labels[labelLastWorkload]
 			if lastOrg != "" && lastOrg != podOrg {
 				recordIsolationViolation("strict_org")
-				recordFilter(Name, "rejected")
+				metrics.RecordFilter(Name, "rejected")
 				return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 					"node %s last workload org %q does not match pod org %q; strict org isolation is enabled",
 					node.Name, lastOrg, podOrg,
@@ -85,7 +85,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 				existingOrg := podLabel(existingPod, labelOrg)
 				if existingOrg != "" && existingOrg != podOrg {
 					recordIsolationViolation("strict_org")
-					recordFilter(Name, "rejected")
+					metrics.RecordFilter(Name, "rejected")
 					return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 						"node %s has pod %s from org %q; strict org isolation rejects pod from org %q",
 						node.Name, existingPod.Name, existingOrg, podOrg,
@@ -96,7 +96,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	}
 
 	if privacyLevel != privacyHigh {
-		recordFilter(Name, "accepted")
+		metrics.RecordFilter(Name, "accepted")
 		return nil
 	}
 
@@ -105,7 +105,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	// Check 1: Node must be wiped.
 	if node.Labels[labelWiped] != "true" {
 		recordIsolationViolation("node_not_wiped")
-		recordFilter(Name, "rejected")
+		metrics.RecordFilter(Name, "rejected")
 		return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 			"node %s is not wiped (nexa.io/wiped != true); run node wipe procedure before scheduling high-privacy workloads",
 			node.Name,
@@ -114,7 +114,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 
 	podOrg := podLabel(pod, labelOrg)
 	if podOrg == "" {
-		recordFilter(Name, "accepted")
+		metrics.RecordFilter(Name, "accepted")
 		return nil
 	}
 
@@ -122,7 +122,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 	lastOrg := node.Labels[labelLastWorkload]
 	if lastOrg != "" && lastOrg != podOrg {
 		recordIsolationViolation("cross_org")
-		recordFilter(Name, "rejected")
+		metrics.RecordFilter(Name, "rejected")
 		return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 			"node %s last workload org %q does not match pod org %q; node must be wiped or used by the same org",
 			node.Name, lastOrg, podOrg,
@@ -135,7 +135,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 		existingOrg := podLabel(existingPod, labelOrg)
 		if existingOrg != "" && existingOrg != podOrg {
 			recordIsolationViolation("cross_org")
-			recordFilter(Name, "rejected")
+			metrics.RecordFilter(Name, "rejected")
 			return fwk.NewStatus(fwk.Unschedulable, fmt.Sprintf(
 				"node %s has pod %s from org %q; high-privacy pod from org %q requires org isolation",
 				node.Name, existingPod.Name, existingOrg, podOrg,
@@ -143,7 +143,7 @@ func (p *Plugin) Filter(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeIn
 		}
 	}
 
-	recordFilter(Name, "accepted")
+	metrics.RecordFilter(Name, "accepted")
 	return nil
 }
 
@@ -171,7 +171,7 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	wiped := node.Labels[labelWiped] == "true"
 
 	if wiped {
-		recordScore(Name, float64(framework.MaxNodeScore))
+		metrics.RecordScore(Name, float64(framework.MaxNodeScore))
 		return framework.MaxNodeScore, nil
 	}
 
@@ -179,11 +179,11 @@ func (p *Plugin) Score(_ context.Context, _ fwk.CycleState, pod *v1.Pod, nodeInf
 	podOrg := podLabel(pod, labelOrg)
 	lastOrg := node.Labels[labelLastWorkload]
 	if podOrg != "" && (lastOrg == "" || lastOrg == podOrg) {
-		recordScore(Name, float64(framework.MaxNodeScore/2))
+		metrics.RecordScore(Name, float64(framework.MaxNodeScore/2))
 		return framework.MaxNodeScore / 2, nil
 	}
 
-	recordScore(Name, 0)
+	metrics.RecordScore(Name, 0)
 	return 0, nil
 }
 
@@ -206,27 +206,6 @@ func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plu
 		policy.DefaultConfigMapName,
 	)
 	return &Plugin{handle: h, policy: provider}, nil
-}
-
-// recordFilter increments the filter result counter if metrics are registered.
-func recordFilter(plugin, result string) {
-	if metrics.FilterResults != nil {
-		metrics.FilterResults.WithLabelValues(plugin, result).Inc()
-	}
-}
-
-// recordPolicyEval increments the policy evaluation counter if metrics are registered.
-func recordPolicyEval(plugin, result string) {
-	if metrics.PolicyEvaluations != nil {
-		metrics.PolicyEvaluations.WithLabelValues(plugin, result).Inc()
-	}
-}
-
-// recordScore observes a score value if metrics are registered.
-func recordScore(plugin string, score float64) {
-	if metrics.ScoreDistribution != nil {
-		metrics.ScoreDistribution.WithLabelValues(plugin).Observe(score)
-	}
 }
 
 // recordIsolationViolation increments the isolation violation counter if metrics are registered.
