@@ -2,7 +2,7 @@ CLAUDE.local.md
 .claude/settings.local.json
 
 # Research notes
-docs/research/
+docs/research/llm-label-validation.md
 
 # Build artifacts
 bin/
