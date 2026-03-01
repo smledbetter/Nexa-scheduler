@@ -45,6 +45,17 @@ spec:
                         - high
                     strictOrgIsolation:
                       type: boolean
+                    cooldownHours:
+                      type: integer
+                confidentialPolicy:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    requireTEEForHigh:
+                      type: boolean
+                    requireEncryptedDisk:
+                      type: boolean
       additionalPrinterColumns:
         - name: Region
           type: boolean

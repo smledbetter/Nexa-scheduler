@@ -1,0 +1,16 @@
+apiVersion: v2
+name: nexa-evidence-agent
+description: Evidence Agent for Nexa Scheduler — serves SEV-SNP attestation reports from confidential nodes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - attestation
+  - evidence
+  - nexa
+home: https://github.com/nexascheduler/nexa
+sources:
+  - https://github.com/nexascheduler/nexa
+maintainers:
+  - name: Nexa Scheduler Team

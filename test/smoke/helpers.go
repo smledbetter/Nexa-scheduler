@@ -150,7 +150,7 @@ func labelWorkers(t tb) {
 		t.Fatalf("expected 3 workers, got %d", len(workers))
 	}
 
-	// Worker-0: us-west1 / us-west1-a / wiped / org=alpha / TEE=tdx / encrypted
+	// Worker-0: us-west1 / us-west1-a / wiped / org=alpha / TEE=tdx / encrypted / wipe-on-complete
 	runCmd(t, "kubectl", "label", "node", workers[0],
 		"nexa.io/region=us-west1",
 		"nexa.io/zone=us-west1-a",
@@ -159,6 +159,7 @@ func labelWorkers(t tb) {
 		"nexa.io/tee=tdx",
 		"nexa.io/confidential=true",
 		"nexa.io/disk-encrypted=true",
+		"nexa.io/wipe-on-complete=true",
 		"--overwrite",
 	)
 	// Worker-1: us-west1 / us-west1-b / not wiped / no org / no TEE
@@ -324,7 +325,7 @@ func generateWebhookCerts(t tb) (caBundle string) {
 	dir := filepath.Join(os.TempDir(), "nexa-webhook-certs")
 	_ = os.MkdirAll(dir, 0o755)
 
-	svcDNS := fmt.Sprintf("%s-nexa-webhook.%s.svc", webhookRelease, namespace)
+	svcDNS := fmt.Sprintf("%s.%s.svc", webhookRelease, namespace)
 
 	// Generate CA key and cert.
 	runCmd(t, "openssl", "req", "-x509", "-newkey", "rsa:2048",
@@ -378,7 +379,7 @@ func installWebhookChart(t tb, caBundle string) {
 	// Base64 encode the CA bundle for the webhook config.
 	caBundleB64 := base64Encode([]byte(caBundle))
 
-	rulesJSON := `[{"namespace":"alpha-workloads","allowedOrgs":["alpha"],"allowedPrivacy":["standard","high"]},{"namespace":"*","allowedOrgs":["default-org"],"allowedPrivacy":["standard","high"]}]`
+	rulesJSON := `[{"namespace":"alpha-workloads","allowedOrgs":["alpha"],"allowedPrivacy":["standard","high"]},{"namespace":"*","allowedOrgs":["default-org","alpha"],"allowedPrivacy":["standard","high"]}]`
 
 	runCmd(t, "helm", "install", webhookRelease, chartPath,
 		"--namespace", namespace,
@@ -439,6 +440,64 @@ func parseAuditLogs(t *testing.T, logs string) ([]audit.DecisionEntry, []complia
 	t.Helper()
 	r := strings.NewReader(logs)
 	return compliance.ReadEntries(r)
+}
+
+// --- Node controller helpers ---
+
+const (
+	controllerRelease = "nexa-controller-smoke"
+)
+
+// buildAndLoadControllerImage builds the controller Docker image and loads it into Kind.
+func buildAndLoadControllerImage(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	runCmd(t, "docker", "build", "-t", "nexascheduler/nexa-node-controller:smoke",
+		"-f", filepath.Join(root, "Dockerfile.controller"), root)
+	runCmd(t, "kind", "load", "docker-image", "nexascheduler/nexa-node-controller:smoke", "--name", clusterName)
+}
+
+// installControllerChart installs the node controller Helm chart with smoke test overrides.
+func installControllerChart(t tb) {
+	t.Helper()
+	root := repoRoot(t)
+	chartPath := filepath.Join(root, "deploy", "helm", "nexa-node-controller")
+	runCmd(t, "helm", "install", controllerRelease, chartPath,
+		"--namespace", namespace,
+		"--set", "image.tag=smoke",
+		"--set", "image.pullPolicy=Never",
+		"--wait",
+		"--timeout", "120s",
+	)
+}
+
+// uninstallControllerChart removes the controller Helm release.
+func uninstallControllerChart() {
+	_, _ = runCmdNoFail("helm", "uninstall", controllerRelease, "--namespace", namespace)
+}
+
+// waitForControllerReady waits until the node controller pod is Running and Ready.
+func waitForControllerReady(t tb, client kubernetes.Interface) {
+	t.Helper()
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		pods, err := client.CoreV1().Pods(namespace).List(
+			context.Background(), metav1.ListOptions{
+				LabelSelector: "app.kubernetes.io/name=nexa-node-controller",
+			})
+		if err == nil && len(pods.Items) > 0 {
+			pod := pods.Items[0]
+			if pod.Status.Phase == "Running" {
+				for _, c := range pod.Status.Conditions {
+					if c.Type == "Ready" && c.Status == "True" {
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	t.Fatalf("node controller not ready within 120s")
 }
 
 // --- Kueue integration helpers ---

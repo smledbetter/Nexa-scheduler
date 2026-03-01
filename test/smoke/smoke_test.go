@@ -11,14 +11,17 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 )
 
 var (
-	testClient     kubernetes.Interface
-	webhookEnabled bool
-	kueueEnabled   bool
+	testClient        kubernetes.Interface
+	controllerEnabled bool
+	webhookEnabled    bool
+	kueueEnabled      bool
 )
 
 // TestMain manages the shared Kind cluster lifecycle.
@@ -65,6 +68,24 @@ func TestMain(m *testing.M) {
 		if t.failed {
 			fmt.Fprintf(os.Stderr, "scheduler not ready: %s\n", t.msg)
 			return 1
+		}
+
+		// Set up node controller (non-fatal).
+		buildAndLoadControllerImage(t)
+		if !t.failed {
+			installControllerChart(t)
+			if !t.failed {
+				waitForControllerReady(t, testClient)
+				if !t.failed {
+					controllerEnabled = true
+					defer uninstallControllerChart()
+				}
+			}
+		}
+		if t.failed {
+			fmt.Fprintf(os.Stderr, "controller setup failed (non-fatal): %s\n", t.msg)
+			t.failed = false
+			t.msg = ""
 		}
 
 		// Set up webhook if Docker is available for the webhook image build.
@@ -477,6 +498,92 @@ spec:
 	// With region policy disabled via CRD, pod should schedule on any node.
 	nodeName := waitForPodScheduled(t, testClient, ns, "crd-override-test", 60*time.Second)
 	t.Logf("pod scheduled on %s with CRD region policy disabled (any node is acceptable)", nodeName)
+}
+
+// --- Node controller smoke tests ---
+
+// TestControllerPatchesNodeLabels verifies the node state controller marks a
+// wipe-on-complete node as dirty after a pod terminates on it.
+func TestControllerPatchesNodeLabels(t *testing.T) {
+	if !controllerEnabled {
+		t.Skip("node controller not installed")
+	}
+
+	// Find worker-0 (has nexa.io/wipe-on-complete=true and nexa.io/wiped=true).
+	nodes, err := testClient.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	var targetNode string
+	for _, n := range nodes.Items {
+		if n.Labels["nexa.io/wipe-on-complete"] == "true" {
+			targetNode = n.Name
+			break
+		}
+	}
+	if targetNode == "" {
+		t.Fatal("no node with nexa.io/wipe-on-complete=true found")
+	}
+
+	// Ensure the node starts wiped=true.
+	runCmd(t, "kubectl", "label", "node", targetNode, "nexa.io/wiped=true", "--overwrite")
+	t.Cleanup(func() {
+		// Restore wiped=true for subsequent tests.
+		_, _ = runCmdNoFail("kubectl", "label", "node", targetNode, "nexa.io/wiped=true", "--overwrite")
+	})
+
+	// Create a short-lived pod directly on the target node (bypass scheduler).
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "controller-test-pod",
+			Labels: map[string]string{
+				"nexa.io/org": "alpha",
+			},
+		},
+		Spec: corev1.PodSpec{
+			NodeName:      targetNode,
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{
+				{
+					Name:    "test",
+					Image:   "busybox:latest",
+					Command: []string{"echo", "done"},
+				},
+			},
+		},
+	}
+	ns := createTestNamespace(t, testClient)
+	_, err = testClient.CoreV1().Pods(ns).Create(context.Background(), pod, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create controller test pod: %v", err)
+	}
+
+	// Wait for pod to complete.
+	err = wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			p, err := testClient.CoreV1().Pods(ns).Get(ctx, "controller-test-pod", metav1.GetOptions{})
+			if err != nil {
+				return false, nil
+			}
+			return p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed, nil
+		})
+	if err != nil {
+		t.Fatalf("controller-test-pod did not complete within 60s: %v", err)
+	}
+
+	// Poll for the controller to mark the node as dirty (wiped=false).
+	err = wait.PollUntilContextTimeout(context.Background(), 2*time.Second, 60*time.Second, true,
+		func(ctx context.Context) (bool, error) {
+			node, err := testClient.CoreV1().Nodes().Get(ctx, targetNode, metav1.GetOptions{})
+			if err != nil {
+				return false, nil
+			}
+			return node.Labels["nexa.io/wiped"] == "false", nil
+		})
+	if err != nil {
+		t.Fatalf("controller did not mark node %s as dirty (wiped=false) within 60s", targetNode)
+	}
+	t.Logf("controller marked node %s as dirty after pod termination", targetNode)
 }
 
 // --- Webhook admission smoke tests ---

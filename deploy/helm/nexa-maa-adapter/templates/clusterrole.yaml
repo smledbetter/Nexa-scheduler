@@ -1,0 +1,13 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nexa-maa-adapter.fullname" . }}
+  labels:
+    {{- include "nexa-maa-adapter.labels" . | nindent 4 }}
+rules:
+  # --- Node IP lookup (read-only) ---
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+{{- end }}

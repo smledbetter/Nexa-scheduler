@@ -1,0 +1,16 @@
+apiVersion: v2
+name: nexa-maa-adapter
+description: Azure MAA Attestation Adapter for Nexa Scheduler — bridges attestation controller to Microsoft Azure Attestation
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - attestation
+  - azure
+  - nexa
+home: https://github.com/nexascheduler/nexa
+sources:
+  - https://github.com/nexascheduler/nexa
+maintainers:
+  - name: Nexa Scheduler Team

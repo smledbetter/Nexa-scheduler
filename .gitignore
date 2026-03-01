@@ -7,3 +7,5 @@ docs/research/
 # Build artifacts
 bin/
 /nexa-scheduler
+/evidence-agent
+/maa-adapter

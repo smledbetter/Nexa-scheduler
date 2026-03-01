@@ -1,0 +1,61 @@
+# Nexa Evidence Agent Helm Values
+
+image:
+  # -- Container image repository.
+  repository: nexascheduler/nexa-evidence-agent
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart appVersion.
+  tag: ""
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the release name.
+nameOverride: ""
+# -- Override the full release name.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount for the agent.
+  create: true
+  # -- Annotations to add to the ServiceAccount.
+  annotations: {}
+  # -- Name override. Defaults to the fullname template.
+  name: ""
+
+# -- Pod annotations.
+podAnnotations: {}
+
+# -- Pod security context. Note: needs access to /dev/sev-guest.
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+
+# -- Container security context. Privileged needed for /dev/sev-guest access.
+securityContext:
+  privileged: true
+  readOnlyRootFilesystem: true
+
+# -- Container resource requests and limits.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# -- Node selector. Defaults to TEE-capable nodes only.
+nodeSelector:
+  nexa.io/tee: ""
+
+# -- Tolerations for agent pod placement.
+tolerations: []
+
+# Agent settings
+agent:
+  # -- HTTP port for the evidence endpoint.
+  port: 9443
+  # -- Path to the SEV-SNP attestation report device.
+  reportPath: /dev/sev-guest
